@@ -73,6 +73,7 @@
       justify-content: space-between;
       align-items: center;
       margin-bottom: 2px;
+      gap: 4px;
     }
     .item:hover {
       background: #111827;
@@ -246,6 +247,24 @@
     .attach-btn:hover {
       background: #111827;
     }
+    /* icon buttons for rename/delete */
+    .icon-btn {
+      border: none;
+      background: transparent;
+      color: #6b7280;
+      cursor: pointer;
+      font-size: 13px;
+      padding: 2px 4px;
+    }
+    .icon-btn:hover {
+      color: #e5e7eb;
+    }
+    .icon-btn.delete:hover {
+      color: #ef4444;
+    }
+    .icon-btn.edit:hover {
+      color: #22c55e;
+    }
     @media (max-width: 840px) {
       main {
         grid-template-columns: 1fr;
@@ -353,7 +372,10 @@
         localStorage.setItem("chat.activeProfileId", state.activeProfileId);
       }
       if (state.activeProfileId && state.activeChatId) {
-        localStorage.setItem("chat.activeChatId." + state.activeProfileId, state.activeChatId);
+        localStorage.setItem(
+          "chat.activeChatId." + state.activeProfileId,
+          state.activeChatId
+        );
       }
     }
 
@@ -361,22 +383,166 @@
       const p = localStorage.getItem("chat.activeProfileId");
       if (p) state.activeProfileId = p;
       if (state.activeProfileId) {
-        const c = localStorage.getItem("chat.activeChatId." + state.activeProfileId);
+        const c = localStorage.getItem(
+          "chat.activeChatId." + state.activeProfileId
+        );
         if (c) state.activeChatId = c;
       }
     }
+
+    // ===== Profile / Chat actions =====
+
+    async function deleteProfile(profileId) {
+      if (!profileId) return;
+      if (!confirm(`Delete profile "${profileId}" and ALL its chats? This cannot be undone.`)) {
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          "/api/chat/profiles/" + encodeURIComponent(profileId),
+          { method: "DELETE" }
+        );
+        if (!res.ok) {
+          const txt = await res.text();
+          alert("Failed to delete profile: " + res.status + " " + txt);
+          return;
+        }
+        state.activeProfileId = null;
+        state.activeChatId = null;
+        await refreshAll();
+        setStatus("Profile deleted");
+      } catch (err) {
+        console.error("Error deleting profile:", err);
+        alert("Error deleting profile (see console).");
+      }
+    }
+
+    async function deleteChat(profileId, chatId) {
+      if (!profileId || !chatId) return;
+      if (!confirm(`Delete chat "${chatId}" from profile "${profileId}"?`)) {
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          "/api/chat/chats/" +
+            encodeURIComponent(profileId) +
+            "/" +
+            encodeURIComponent(chatId),
+          { method: "DELETE" }
+        );
+        if (!res.ok) {
+          const txt = await res.text();
+          alert("Failed to delete chat: " + res.status + " " + txt);
+          return;
+        }
+        if (state.activeChatId === chatId) {
+          state.activeChatId = null;
+        }
+        await loadChats();
+        await loadMessages();
+        setStatus("Chat deleted");
+      } catch (err) {
+        console.error("Error deleting chat:", err);
+        alert("Error deleting chat (see console).");
+      }
+    }
+
+    async function renameProfile(profileId, currentName) {
+      if (!profileId) return;
+      const newName = prompt("New profile name:", currentName || "");
+      if (newName === null) return; // cancelled
+      try {
+        await fetchJSON(
+          "/api/chat/profiles/" + encodeURIComponent(profileId),
+          {
+            method: "PATCH",
+            body: JSON.stringify({ display_name: newName || null })
+          }
+        );
+        await loadProfiles();
+        await refreshChatsAndMessages();
+        setStatus("Profile renamed");
+      } catch (err) {
+        console.error("Error renaming profile:", err);
+        alert("Error renaming profile (see console).");
+      }
+    }
+
+    async function renameChat(profileId, chatId, currentName) {
+      if (!profileId || !chatId) return;
+      const newName = prompt("New chat name:", currentName || "");
+      if (newName === null) return; // cancelled
+      try {
+        await fetchJSON(
+          "/api/chat/chats/" +
+            encodeURIComponent(profileId) +
+            "/" +
+            encodeURIComponent(chatId),
+          {
+            method: "PATCH",
+            body: JSON.stringify({ display_name: newName || null })
+          }
+        );
+        await loadChats();
+        await loadMessages();
+        setStatus("Chat renamed");
+      } catch (err) {
+        console.error("Error renaming chat:", err);
+        alert("Error renaming chat (see console).");
+      }
+    }
+
+    // ===== Rendering =====
 
     function renderProfiles() {
       profilesListEl.innerHTML = "";
       state.profiles.forEach((p) => {
         const div = document.createElement("div");
-        div.className = "item" + (p.id === state.activeProfileId ? " active" : "");
+        div.className =
+          "item" + (p.id === state.activeProfileId ? " active" : "");
+
+        const info = document.createElement("div");
+        info.style.display = "flex";
+        info.style.flexDirection = "column";
+
+        const displayName = p.display_name || p.id;
+
         const nameSpan = document.createElement("span");
-        nameSpan.textContent = p.display_name || p.id;
+        nameSpan.textContent = displayName;
         const small = document.createElement("small");
         small.textContent = p.id;
-        div.appendChild(nameSpan);
-        div.appendChild(small);
+
+        info.appendChild(nameSpan);
+        info.appendChild(small);
+
+        const btnGroup = document.createElement("div");
+
+        const renameBtn = document.createElement("button");
+        renameBtn.className = "icon-btn edit";
+        renameBtn.textContent = "✏️";
+        renameBtn.title = "Rename profile";
+        renameBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          renameProfile(p.id, displayName);
+        });
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.className = "icon-btn delete";
+        deleteBtn.textContent = "🗑";
+        deleteBtn.title = "Delete profile";
+        deleteBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          deleteProfile(p.id);
+        });
+
+        btnGroup.appendChild(renameBtn);
+        btnGroup.appendChild(deleteBtn);
+
+        div.appendChild(info);
+        div.appendChild(btnGroup);
+
         div.addEventListener("click", () => {
           if (state.activeProfileId !== p.id) {
             state.activeProfileId = p.id;
@@ -385,6 +551,7 @@
             refreshChatsAndMessages();
           }
         });
+
         profilesListEl.appendChild(div);
       });
     }
@@ -393,13 +560,49 @@
       chatsListEl.innerHTML = "";
       state.chats.forEach((c) => {
         const div = document.createElement("div");
-        div.className = "item" + (c.id === state.activeChatId ? " active" : "");
+        div.className =
+          "item" + (c.id === state.activeChatId ? " active" : "");
+
+        const info = document.createElement("div");
+        info.style.display = "flex";
+        info.style.flexDirection = "column";
+
+        const displayName = c.display_name || c.id;
+
         const nameSpan = document.createElement("span");
-        nameSpan.textContent = c.display_name || c.id;
+        nameSpan.textContent = displayName;
         const small = document.createElement("small");
         small.textContent = (c.message_count || 0) + " msg";
-        div.appendChild(nameSpan);
-        div.appendChild(small);
+
+        info.appendChild(nameSpan);
+        info.appendChild(small);
+
+        const btnGroup = document.createElement("div");
+
+        const renameBtn = document.createElement("button");
+        renameBtn.className = "icon-btn edit";
+        renameBtn.textContent = "✏️";
+        renameBtn.title = "Rename chat";
+        renameBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          renameChat(state.activeProfileId, c.id, displayName);
+        });
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.className = "icon-btn delete";
+        deleteBtn.textContent = "🗑";
+        deleteBtn.title = "Delete chat";
+        deleteBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          deleteChat(state.activeProfileId, c.id);
+        });
+
+        btnGroup.appendChild(renameBtn);
+        btnGroup.appendChild(deleteBtn);
+
+        div.appendChild(info);
+        div.appendChild(btnGroup);
+
         div.addEventListener("click", () => {
           if (state.activeChatId !== c.id) {
             state.activeChatId = c.id;
@@ -407,6 +610,7 @@
             loadMessages();
           }
         });
+
         chatsListEl.appendChild(div);
       });
     }
@@ -416,10 +620,12 @@
       (messages || []).forEach((m) => {
         const role = (m.role || "user").toLowerCase();
         const row = document.createElement("div");
-        row.className = "msg-row " + (role === "assistant" ? "assistant" : "user");
+        row.className =
+          "msg-row " + (role === "assistant" ? "assistant" : "user");
 
         const bubble = document.createElement("div");
-        bubble.className = "msg-bubble " + (role === "assistant" ? "assistant" : "user");
+        bubble.className =
+          "msg-bubble " + (role === "assistant" ? "assistant" : "user");
 
         const rawText = m.text || "";
         let mainText = rawText;
@@ -463,6 +669,8 @@
       });
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
+
+    // ===== Header & data loading =====
 
     function updateHeader() {
       const prof = state.profiles.find((p) => p.id === state.activeProfileId);
@@ -512,7 +720,10 @@
         state.profiles = [created];
       }
 
-      if (!state.activeProfileId || !state.profiles.find((p) => p.id === state.activeProfileId)) {
+      if (
+        !state.activeProfileId ||
+        !state.profiles.find((p) => p.id === state.activeProfileId)
+      ) {
         state.activeProfileId = state.profiles[0].id;
       }
 
@@ -522,7 +733,9 @@
 
     async function loadChats() {
       if (!state.activeProfileId) return;
-      const data = await fetchJSON("/api/chat/chats?profile_id=" + encodeURIComponent(state.activeProfileId));
+      const data = await fetchJSON(
+        "/api/chat/chats?profile_id=" + encodeURIComponent(state.activeProfileId)
+      );
       state.chats = data.chats || [];
 
       if (!state.chats.length) {
@@ -533,7 +746,10 @@
         state.chats = [created];
       }
 
-      if (!state.activeChatId || !state.chats.find((c) => c.id === state.activeChatId)) {
+      if (
+        !state.activeChatId ||
+        !state.chats.find((c) => c.id === state.activeChatId)
+      ) {
         state.activeChatId = state.chats[0].id;
       }
 
@@ -546,8 +762,10 @@
       setStatus("Loading messages...");
       try {
         const data = await fetchJSON(
-          "/api/chat/messages?profile_id=" + encodeURIComponent(state.activeProfileId) +
-          "&chat_id=" + encodeURIComponent(state.activeChatId)
+          "/api/chat/messages?profile_id=" +
+            encodeURIComponent(state.activeProfileId) +
+            "&chat_id=" +
+            encodeURIComponent(state.activeChatId)
         );
         state.activeChatId = data.chat_id || state.activeChatId;
         renderMessages(data.messages || []);
@@ -575,6 +793,8 @@
         setStatus("Error refreshing");
       }
     }
+
+    // ===== Create profile/chat =====
 
     async function createProfile() {
       const name = prompt("Profile name (optional):", "");
@@ -610,6 +830,8 @@
         alert("Failed to create chat");
       }
     }
+
+    // ===== Sending messages =====
 
     async function sendMessage(smart) {
       if (!state.activeProfileId || !state.activeChatId) return;
@@ -701,7 +923,8 @@
         rowErr.className = "msg-row assistant";
         const bubbleErr = document.createElement("div");
         bubbleErr.className = "msg-bubble assistant";
-        bubbleErr.textContent = "(Error: " + (err.message || "send failed") + ")";
+        bubbleErr.textContent =
+          "(Error: " + (err.message || "send failed") + ")";
         const tsErr = document.createElement("div");
         tsErr.className = "msg-ts";
         tsErr.textContent = tsNow;
@@ -716,6 +939,8 @@
         promptEl.focus();
       }
     }
+
+    // ===== Event wiring =====
 
     sendBtn.addEventListener("click", (e) => {
       e.preventDefault();
