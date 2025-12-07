@@ -1,0 +1,171 @@
+Overview
+
+The Vision subsystem enables the Local AI OS to analyze user-uploaded images inside chats without interfering with the coding pipeline.
+
+It is not a continuous multimodal chat, but a one-off image analysis tool embedded inside chats.
+Images are stored locally with thumbnails, and results appear as normal assistant messages.
+
+1. Design Goals
+Goal	Explanation
+Low friction	Upload → Parse → Output. No mandatory text prompt.
+Isolation	Vision never affects coder/reviewer/judge stages.
+Contextual	Output is stored inside the active chat so the conversation remembers it.
+Lightweight	Thumbnail instead of full resolution in UI to reduce load time.
+Replaceable	Vision model can be swapped without redesign.
+2. Flow Diagram
+User uploads image (+ prompt optional)
+           ↓
+Backend receives file + profile_id + chat_id
+           ↓
+Image saved to storage + thumbnail generated
+           ↓
+Vision model (run_vision) processes bytes
+           ↓
+Assistant response text
+           ↓
+Vision result stored as chat message
+           ↓
+UI displays:
+  - image thumbnail
+  - user prompt (if any)
+  - parsed analysis message
+
+3. Endpoint Specification
+POST /api/chat/vision
+Field	Type	Notes
+profile_id	Form	Required
+chat_id	Form	Required
+prompt	Form	Optional text accompanying image
+mode	Form	auto / custom (depends on model prompt structure)
+file	UploadFile	Required image
+Response JSON
+{
+  "profile_id": "A",
+  "chat_id": "A",
+  "output": "detected_objects, text, description etc"
+}
+
+Error Responses
+Code	Situation
+400	Vision disabled or missing image data
+404	Profile or chat not found
+4. Storage
+
+Images are saved locally:
+
+/data/chats/<profile_id>/<chat_id>/<message_id>.jpg
+/data/chats/<profile_id>/<chat_id>/<message_id>_thumb.jpg
+
+
+Message JSON stores:
+
+{
+  "role": "user",
+  "text": "[Image] optional prompt",
+  "image": "message_id_thumb.jpg",
+  "ts": "timestamp"
+}
+
+
+Assistant reply is stored normally:
+
+{
+  "role": "assistant",
+  "text": "<vision output>",
+  "ts": "timestamp"
+}
+
+
+Saving thumbnails keeps the chat UI fast even with many images.
+
+5. UI Behavior
+Component	Behavior
+Chat bubble	If image is present, show clickable thumbnail before message text
+Thumbnail size	~75×75 px, rounded corners
+Full view	Clicking thumbnail shows full image in overlay
+Vision output	Rendered as regular assistant bubble below user image bubble
+
+Images do not appear in the dashboard, only in the chat.
+
+6. Vision Prompting Strategy
+
+To simplify model migration, the input to the vision model uses:
+
+<system prompt explaining output format>
+User prompt: <text or blank>
+Image bytes: <raw>
+Return ONLY normal plain text.
+
+
+No JSON constraints.
+No markdown fences.
+No structured tags required for downstream.
+
+This avoids hallucinated schemas and keeps models interchangeable.
+
+7. Model Flexibility
+
+Since vision models vary drastically, the implementation supports:
+
+pure encoder–decoder models
+
+captioning models
+
+multimodal chat models
+
+OCR-specialized models
+
+The only constraint is that run_vision() returns plain text.
+
+The model name used by the vision module is defined in config.py:
+
+VISION_ENABLED = True
+VISION_MODEL_NAME = "llava:7b"    # example
+
+
+Replacing model = no code change.
+
+8. Logging
+
+Vision interactions are logged into general history (dashboard) with:
+
+mode = chat_vision_<mode>
+final_output = parsed result
+judge = None
+
+
+Vision does not get judged or escalated.
+
+9. Safety Constraints
+Risk	Prevention
+Model returns markdown	Pipeline strips code block fences
+Model dumps JSON	UI renders text only
+User uploads large images	Thumbnail keeps UI performance
+NSFW images	System makes no ethical judgments (local use only)
+Sensitive data	No upload leaves machine
+10. Future Features Supported by Design (not implemented yet)
+Feature	Status
+Multi-image comparison	Ready
+Object measurement / detection coordinates	Model dependent
+OCR text to structured table	Needs post-processing
+Face recognition	Disabled intentionally (privacy risk)
+Video uploads	Add frame sampling to run_vision
+11. Summary
+
+The Vision System:
+
+Runs independently from the coding pipeline
+
+Appears naturally inside chats
+
+Saves images locally with thumbnails
+
+Allows optional user prompts
+
+Stores analysis response as normal chat text
+
+Works with any future vision model
+
+This keeps the chat experience powerful without contaminating the pipeline or dashboard.
+
+End of VISION.md

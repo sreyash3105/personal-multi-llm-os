@@ -1,0 +1,207 @@
+# System Architecture — Local AI Operating System
+
+This document explains the full architecture, module relationships, data flow, and execution pipeline for the system.
+
+---
+
+## 🏗 High-Level Structure
+
+User (Laptop/PC UI)
+↓
+FastAPI Server (code_server.py)
+↓
+┌────────────┬────────────┬────────────┐
+│ Pipeline │ Chat System│ Vision │
+│ (coding) │ (profiles) │ (image AI) │
+└────────────┴────────────┴────────────┘
+↓
+Storage Layer
+↓
+Disk
+
+yaml
+Copy code
+
+All features are **local and offline**. No cloud network calls.
+
+---
+
+## 🔌 Module Overview
+
+| Module | Role |
+|--------|------|
+| `code_server.py` | Master router + endpoint definitions |
+| `pipeline.py` | coder → reviewer → judge → escalation logic |
+| `vision_pipeline.py` | image processing + model routing |
+| `chat_storage.py` | profiles / chats / messages on disk |
+| `history.py` | rotating global history for dashboard |
+| `config.py` | model registry + configuration flags |
+| `prompts.py` | system prompts for all roles |
+| `dashboard.py` | human-readable task log UI |
+| `chat_ui.py` | WhatsApp-style multi-chat web app |
+
+---
+
+## 🔄 Logical Components
+
+### 1) Code pipeline
+Goal: generate **final improved code**, not raw model output.
+
+coder → reviewer → judge → (optional escalate to reviewer) → final answer
+
+pgsql
+Copy code
+
+- Coder = fast generation
+- Reviewer = slower but best-quality correction
+- Judge = numeric confidence & conflict report → log only
+
+### 2) Chat system
+Goal: preserve context across projects without contaminating memory.
+
+Profile (client/project)
+└── Chat (topic/task)
+└── Messages
+
+yaml
+Copy code
+
+Each level can override model choice.
+
+### 3) Vision system
+Goal: run **one-off image analysis inside chats**.
+
+- Image is never stored permanently
+- Thumbnail saved for UX
+- Result is stored as normal text message
+
+---
+
+## 🔁 Execution Flow by Feature
+
+### A) Code workflow
+UI → /api/code → pipeline.run_coder → pipeline.run_reviewer → pipeline.run_judge
+→ history_logger → dashboard
+→ return code to UI
+
+shell
+Copy code
+
+### B) Chat workflow
+UI → /api/chat → chat_storage.append_message → call_ollama(model)
+→ append assistant message → history_logger → UI refresh
+
+shell
+Copy code
+
+### C) Vision workflow
+UI upload → /api/chat/vision
+→ run_vision(image_bytes + user_prompt)
+→ append "[Image]" user msg + assistant summary
+→ store thumbnail + record message
+→ UI shows thumbnail above text
+
+yaml
+Copy code
+
+---
+
+## 🗂 Storage Layout (Filesystem)
+
+history/
+history_20250101_001.jsonl
+history_20250101_002.jsonl
+chats/
+A/profile.json
+A/chats/
+a/chat.json
+b/chat.json
+B/profile.json
+B/chats/
+a/chat.json
+thumbnails/
+<profile>/<chat>/<timestamp>.jpg # optional for vision
+
+yaml
+Copy code
+
+---
+
+## 📡 UI Routing
+
+| Path | Purpose |
+|------|---------|
+| `/chat` | Full multi-profile, multi-chat workspace |
+| `/dashboard` | Global task history view (coder + chat + vision) |
+
+---
+
+## 🧱 Module Dependencies
+
+chat_ui → code_server → (pipeline, chat_storage, vision_pipeline, config, history, prompts)
+dashboard → code_server → history
+pipeline → config, history, prompts
+vision → config, history, prompts
+chat_storage → config
+
+yaml
+Copy code
+
+Decoupling:
+- Chat system does NOT depend on code pipeline
+- Vision system only plugs into chat layer
+- UI uses API only, no direct storage access
+
+---
+
+## ⚙ Design Principles
+
+| Principle | Reason |
+|----------|--------|
+| Local-first | privacy, speed, no limits |
+| No single "memory blob" | avoids context poisoning between projects |
+| Everything logged | reproducibility |
+| Override hierarchy | max control without reconfig |
+| Replaceable vision & language models | longevity & model freedom |
+| Zero cloud dependencies | portability |
+
+---
+
+## 🚨 Failure Safety
+
+| Area | Strategy |
+|------|----------|
+| History logging | never blocks API — in try/except |
+| Judge JSON | if invalid → safe fallback with parse error |
+| Missing models | error raised with clear message |
+| Vision disabled | endpoint returns 400 instead of crashing |
+| Missing profiles/chats | auto-create when possible |
+
+---
+
+## 🧱 Performance Scaling
+
+| Area | Current | Future upgrade |
+|------|--------|----------------|
+| Chat history persistence | local JSON | SQLite or DuckDB |
+| Vision | single model | hybrid routing by task type |
+| Code pipeline | sync | async queued jobs |
+| UI | monolithic | dynamic components |
+
+---
+
+## 🧩 System Diagram
+
+┌────────────┐ ┌────────────┐
+│ Chat UI │─────▶│ code_server│
+└─────┬──────┘ └─────┬──────┘
+│ │
+▼ ▼
+┌────────────┐ ┌────────────┐
+│ chat_storage│ │ pipeline │
+└─────┬──────┘ └─────┬──────┘
+│ │
+▼ ▼
+┌────────────┐ ┌────────────┐
+│ vision │ │ history │
+└────────────┘ └────────────┘

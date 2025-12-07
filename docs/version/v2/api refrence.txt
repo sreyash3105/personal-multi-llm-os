@@ -1,0 +1,224 @@
+Overview
+
+This document lists all public APIs of the Local AI OS backend.
+Everything is REST-based and designed for local LAN use.
+
+Base URL
+http://<PC_IP>:8100
+
+1. Coding Pipeline APIs
+POST /api/code
+
+Runs the coder → judge → optional reviewer → final output pipeline.
+
+Request — JSON
+{
+  "prompt": "generate python script to crawl github repos"
+}
+
+Mode Tags
+
+Add one of the tags as the first line in your prompt:
+
+Tag	Mode	Behavior
+///raw	coder‐only	No judge, no reviewer
+///review-only	send text to reviewer	Reviewer edits + returns final code
+///ctx, ///continue	context mode	Include history context before coding
+no tag	default	coder → judge → optional escalation → final code
+Response — JSON
+{
+  "output": "<final code string>"
+}
+
+2. Study API
+POST /api/study
+
+Generates structured learning / teaching output.
+
+Request — JSON
+{
+  "prompt": "explain transformers for beginners"
+}
+
+Style Tags
+Tag	Style
+///short	brief summary
+///deep	in-depth walkthrough
+///quiz	quiz mode
+none	normal explanation
+Response
+{
+  "output": "<study explanation>"
+}
+
+3. Dashboard API
+GET /dashboard
+
+Returns the HTML dashboard showing:
+
+full pipeline trace for /api/code and /api/study
+
+judge scores
+
+escalation events
+
+summaries and raw logs
+
+Parameter	Type	Default
+limit	query	50 (records)
+4. Chat System APIs
+4.1 Profiles
+Method	Endpoint	Purpose
+GET	/api/chat/profiles	list profiles
+POST	/api/chat/profiles	create profile
+PATCH	/api/chat/profiles/{profile_id}	rename / set model override
+DELETE	/api/chat/profiles/{profile_id}	delete profile + all chats
+
+POST /api/chat/profiles body:
+
+{ "display_name": "Web Project", "model_override": "llama3:8b" }
+
+4.2 Chats
+Method	Endpoint	Purpose
+GET	/api/chat/chats?profile_id=A	list chats under a profile
+POST	/api/chat/chats	create new chat
+PATCH	/api/chat/chats/{profile_id}/{chat_id}	rename / set model override
+DELETE	/api/chat/chats/{profile_id}/{chat_id}	delete chat
+
+POST /api/chat/chats body:
+
+{ "profile_id": "A", "display_name": "API debugging" }
+
+4.3 Messages
+GET /api/chat/messages
+/api/chat/messages?profile_id=A&chat_id=B
+
+
+Returns full message history.
+
+4.4 Chat Conversation
+POST /api/chat
+
+Main chat endpoint.
+
+Request JSON
+{
+  "prompt": "how to optimize postgres writes?",
+  "profile_id": "A",
+  "chat_id": "B"
+}
+
+
+If profile_id or chat_id missing, backend auto-creates them.
+
+Response JSON
+{
+  "output": "... assistant reply ...",
+  "profile_id": "A",
+  "chat_id": "B"
+}
+
+4.5 Vision in Chat
+POST /api/chat/vision
+
+Content-type: multipart/form-data
+
+Fields:
+
+Field	Type
+profile_id	form
+chat_id	form
+prompt	form (optional)
+mode	form (default "auto")
+file	UploadFile (image)
+
+Response:
+
+{
+  "profile_id": "A",
+  "chat_id": "B",
+  "output": "<vision model result>"
+}
+
+
+Vision adds:
+
+thumbnail in chat
+
+AI description as assistant message
+
+5. Model Discovery API
+GET /api/chat/models
+
+Lists all available LLMs for use in chat UI.
+
+{
+  "default_model": "qwen2.5:14b",
+  "available_models": [
+    "llama3:8b",
+    "deepseek-coder-v2:16b",
+    "codestral:22b",
+    ...
+  ]
+}
+
+
+Used by the UI dropdown for model override.
+
+6. Profile Summary API
+POST /api/chat/profile_summary
+
+Summarizes all chats inside a profile.
+
+Request:
+
+{ "profile_id": "A" }
+
+
+Response:
+
+{
+  "profile_id": "A",
+  "summary": "<multi-chat structured summary>"
+}
+
+Response Conventions
+Status	Meaning
+200	OK
+400	malformed input / missing file / vision disabled
+404	profile/chat not found
+500	internal error from model call
+
+All responses are returned as JSON except:
+
+/dashboard → HTML
+
+/chat → HTML (chat UI)
+
+Security Notes
+Aspect	Design
+Auth	none – local-only usage assumption
+CORS	allowed for web clients on LAN
+Uploads	stored locally only
+Internet calls	model inference is local (Ollama)
+
+If internet exposure is desired later, add:
+
+auth header
+
+per-profile tokens
+
+CORS restrictions
+
+Backward Compatibility
+
+All APIs are stable.
+Internal upgrades (new modules, new UI) never break:
+
+/api/code
+
+/api/study
+
+These are always preserved for the laptop coding workflow.
+
+End of API_REFERENCE.md

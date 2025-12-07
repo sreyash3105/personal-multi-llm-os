@@ -1,0 +1,195 @@
+# MASTER HANDOVER DOCUMENT – PERSONAL LOCAL AI OS  
+Version: v3  
+Date: 2025-12-06  
+
+This document preserves the complete technical context of the project and acts as the long-term system prompt for future development sessions.
+
+---
+
+## PART A — ARCHITECTURE & TECHNICAL DOCUMENTATION
+
+### 🧠 Project Overview
+Personal Local AI Operating System (Jarvis-style Assistant) running on a **desktop PC** and controlled from a **laptop client over LAN**.
+
+Core philosophy:
+
+- Local-first AI (privacy / ownership)
+- Multiple LLMs with **specialized roles**
+- Pipeline approach (coder → reviewer → judge → escalation)
+- **Traceable cognition** via dashboard
+- Cloud optional in future (manual escalation only)
+
+### 🎯 Primary goals
+| Capability | Status |
+|-----------|--------|
+| Code generation | ✔ |
+| Code review | ✔ |
+| Judge scoring | ✔ |
+| Auto-escalation | ✔ |
+| Study / teaching mode | ✔ |
+| LAN laptop client | ✔ |
+| Dashboard UI | ✔ |
+| Memory system | ⏳ (planned) |
+| Planner / intent router | ⏳ (planned) |
+| STT / TTS | ⏳ (future) |
+| Multimodal OCR/vision | ⏳ (future) |
+
+### 🖥 Hardware
+| Component | Value |
+|----------|-------|
+| CPU | AMD 7800X3D |
+| GPU | RTX 5060 8GB |
+| RAM | 32GB DDR5 |
+| OS | Windows |
+| Models stored | D: SSD |
+
+Laptop:
+- Windows with Python venv
+- Acts as thin IO client only
+
+### 🔌 Networking + Workflow
+- PC server: `http://0.0.0.0:8100`
+- Laptop connects: `http://<PC_IP>:8100`
+- Laptop flow: edit `prompt.txt` → Save → clipboard updated automatically
+
+Endpoints:
+| API | Purpose |
+|-----|---------|
+| `/api/code` | coding pipeline |
+| `/api/study` | teaching / learning |
+| `/dashboard` | cognition trace UI |
+
+---
+
+## PART B — SYSTEM PROMPT FOR AI PLANNER (FOR FUTURE CHATS)
+
+You are the architect and coordinator of the Personal Local AI OS.  
+Your job is to evolve the system incrementally without breaking existing functionality.
+
+Rules:
+
+1. The **PC is the brain** — all LLMs run locally via Ollama.
+2. The **laptop is only IO** — never run LLMs on laptop.
+3. When upgrading:
+   - Modify only necessary modules
+   - Respect separation of concerns  
+     (`pipeline` = orchestration, `config` = model selection, `dashboard` = UI, `code_server` = API)
+4. Do not redesign completed features; add new capabilities on top.
+5. Always maintain backward compatibility with `/api/code` client workflow.
+6. When user asks for next upgrade → propose roadmap + deliver patches file-by-file.
+7. When user asks:
+   ```
+   drop me the final doc for next handover
+   ```
+   → regenerate this doc including all previous info + new upgrades.
+
+Pipeline logic to respect:
+
+```
+coder → judge → (optional escalation → reviewer) → final output
+```
+
+Study mode bypasses coder/judge and directly generates structured educational output.
+
+Dashboard must never break from missing judge fields, missing summaries, etc.
+
+---
+
+## PART C — CURRENT IMPLEMENTATION STATE (v3)
+
+### 🔧 Model registry
+Defined in `config.py`:
+
+- qwen2.5-coder:7b
+- deepseek-coder-v2:16b (active coder)
+- codestral:22b (active reviewer)
+- qwen2.5:7b / 14b (judge / reasoning — used via judge)
+- llava:7b (installed, to be integrated)
+- phi3:3.8b (fast helper)
+- llama3.1 / llama3 variants for chat/study
+
+### 🧠 Pipeline modules and roles
+| Stage | Model | Status |
+|-------|-------|--------|
+| Coder | deepseek-coder-v2:16b | Active |
+| Reviewer | codestral:22b | Active on escalation |
+| Judge | qwen2.5:7b | Active |
+| Escalation | reviewer if conflict high / confidence low | Active |
+| Study mode | qwen2.5:7b (currently) | Active |
+
+### 🚦 Escalation rules
+| Judge Metric | Trigger |
+|--------------|---------|
+| Confidence < threshold | escalate |
+| Conflict > threshold | escalate |
+
+If escalation occurs → comment injected at top:
+```
+# ESCALATION: <reason>
+```
+
+### 📁 Module map
+| File | Responsibility |
+|-------|---------------|
+| `config.py` | models + thresholds |
+| `pipeline.py` | coder / reviewer / judge orchestration |
+| `code_server.py` | FastAPI endpoints (`/api/code`, `/api/study`, `/dashboard`) |
+| `dashboard.py` | Dashboard UI builder (HTML + CSS) |
+| `history.py` | JSONL rotating logs + fetch recent |
+| `prompts.py` | Reviewer + judge + study system prompts |
+| `send_to_coder.py` | Laptop trigger client (Notepad → clipboard) |
+
+### 🧾 Dashboard status
+- Fully modular (`dashboard.py`)
+- Tailwind-inspired design
+- Safe casting (no more `.replace` on `None`)
+- Expandable trace rows for full pipeline inspection
+
+---
+
+## PART D — CHANGE LOG SINCE LAST HANDOVER (v2 → v3)
+
+| Area | Change |
+|------|--------|
+| Judge | Added `JUDGE_SYSTEM_PROMPT` + JSON parser |
+| Auto-Escalation | Added confidence/conflict thresholds + comment injection |
+| Study mode | Added `/api/study` endpoint + `run_study` in pipeline |
+| Dashboard | Moved to new `dashboard.py`, redesigned UI, safe null handling |
+| Code organization | API routing now clean; dashboard logic no longer inside `code_server.py` |
+| Reliability | Fixed missing summary crash, safe str casting everywhere |
+
+---
+
+## PART E — RECOMMENDED FUTURE UPGRADES (next 10–12%)
+
+These are independent modules and can be added one-by-one without affecting current stability.
+
+| Category | Upgrade |
+|----------|---------|
+| Memory | Long-term embeddings + notes + recall during coding |
+| Planner | Auto detect task type: coding / debugging / study / chat |
+| Chat mode | `/api/chat` endpoint (conversational personality) |
+| File I/O | Output router: save code to `.py`, `.md`, `.txt` |
+| Vision | `/api/vision` using `llava:7b` |
+| Dashboard | Search bar + auto-refresh + graph of conflict over time |
+| UX | Web front-end chat UI vs Notepad |
+| Automation | Generated tests + runtime execution sandbox |
+| Cloud Opt-in | Escalate only when specifically requested |
+
+---
+
+## END OF MASTER HANDOVER — v3
+
+Next instruction triggers regeneration:
+```
+drop me the final doc for next handover
+```
+
+To request next upgrade:
+```
+NEXT
+```
+or
+```
+ROLL
+```

@@ -1,0 +1,80 @@
+🧩 Project
+
+Personal Local AI OS — FastAPI + Ollama
+Chat • Code • Study • Judge • Vision • History • Dashboard • Profiles
+
+🔥 Root Problem Overview (What went wrong)
+
+The system originally worked perfectly. The failure chain began when we attempted to upgrade image handling inside chat UI:
+
+Issue	Result
+JavaScript CSP blocked eval()	UI failed to render image messages
+Manual custom parsing of encoded image messages (__IMG__)	Syntax errors because of newline handling
+Fix attempts patching JS repeatedly	More inconsistent JS rendering
+User requested full rewrite of UI	Some new files incompatible with old backend
+Backend restructure during UI issue	Folder inconsistencies, duplicated modules, mixed versions
+
+Once UI began failing, debugging time escalated because:
+
+backend & files changed mid-debug
+
+some modules became mismatched
+
+half of upgrade was applied, half rolled back
+
+Eventually the system became in a broken hybrid state.
+
+🛠 Recovery Path (How we fixed it)
+
+Instead of continuing patching, we executed a strategic rollback:
+
+🔄 Done
+Component	Action
+Code pipeline	Fully restored
+Study pipeline	Fully restored
+Judge pipeline	Fully restored
+History	Fully restored
+Dashboard	Fully restored
+Vision	Fully restored
+Chat backend	Restored + simplified
+Tools runtime	Removed from main to avoid breakage
+Legacy folder	Created for all disabled experimental modules
+Git	Initialized + .gitignore configured
+🧹 Status After Recovery
+Component	Status
+Backend APIs	Working
+Dashboard	Working
+Vision in chat	Disabled for now (future upgrade)
+New Tools runtime	Archived (not active)
+SQLite integration	Deferred; JSON in use again
+
+Server launch now works via:
+
+cd D:\AI_Assistant\server
+.\venv\Scripts\activate
+uvicorn code_server:app --host 0.0.0.0 --port 8000 --reload
+
+📦 CURRENT SYSTEM VERSION
+Version	Description
+Stable — Local AI OS (Rollback Edition)	Latest fully working version restored after failures
+Legacy Folder	Contains all experimental work for tool runtime, UI rebuilds, and SQLite migration
+
+No functional experiments are lost — nothing deleted; everything archived.
+
+🔜 Immediate Next Safe Upgrades (Recommended Roadmap)
+
+After rollback, the system is stable and usable, so upgrades can now resume but must be done safely and modularly:
+
+Priority	Upgrade	Risk
+1	Fix Chat UI image parser (no eval, safe newline parser)	Low
+2	Add “Smart Mode” button (bigger model override)	Low
+3	Enable Vision Upload inside chat bubble	Medium
+4	Re-introduce Tool Runtime (AFTER UI stable)	Medium
+5	SQLite migration from JSON	Medium–High
+6	Multi-agent orchestration	High
+
+The next step should be:
+
+Fix chat image message rendering without touching backend or HTML structure.
+
+That will complete rollback recovery fully.

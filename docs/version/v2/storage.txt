@@ -1,0 +1,264 @@
+Overview
+
+The Local AI OS stores all data locally on disk, with formats designed for:
+
+speed
+
+zero-dependency backups
+
+safe future migrations
+
+browsing and debugging using any text editor
+
+No SQL / No cloud — everything persists on the PC.
+
+1. Folder Structure
+/server
+ ├─ config.py
+ ├─ code_server.py
+ ├─ pipeline.py
+ ├─ dashboard.py
+ ├─ chat_storage.py
+ ├─ history.py
+ ├─ vision_pipeline.py
+ ├─ prompts.py
+ ├─ /history                  ← pipeline logs for code & study
+ │    ├─ history_<ts>_001.jsonl
+ │    └─ ...
+ ├─ /data
+ │    ├─ /profiles            ← root folder for chat system
+ │    │     ├─ A
+ │    │     │   ├─ meta.json
+ │    │     │   └─ /chats
+ │    │     │        ├─ A
+ │    │     │        │   ├─ meta.json
+ │    │     │        │   └─ messages.jsonl
+ │    │     │        ├─ B
+ │    │     │        └─ ...
+ │    └─ /vision              ← (optional future storage)
+ └─ /static (UI extras optional)
+
+2. History (Coder / Reviewer / Judge / Study / Summary)
+
+Location:
+
+/history/history_<timestamp>_<counter>.jsonl
+
+
+Each line is a complete JSON record.
+
+Example record:
+
+{
+  "ts": "2025-12-06T13:15:23.182Z",
+  "mode": "code_reviewed",
+  "original_prompt": "Make a python script to merge CSV files",
+  "normalized_prompt": "Make a python script to merge CSV files",
+  "coder_output": "import ...",
+  "reviewer_output": "import ...",
+  "final_output": "import ...",
+  "escalated": false,
+  "escalation_reason": "",
+  "judge": {
+    "confidence_score": 9,
+    "conflict_score": 2,
+    "judgement_summary": "Looks correct.",
+    "raw_response": "{...}",
+    "parse_error": null
+  }
+}
+
+
+Why JSONL?
+
+Append-only
+
+Crash safe
+
+Partial recovery trivial
+
+No locking issues
+
+3. Chat Storage
+
+Root:
+
+/data/profiles
+
+3.1 Profile Folder
+
+Example:
+
+/data/profiles/A/
+
+
+Contains:
+
+meta.json
+/chats/
+
+
+meta.json structure:
+
+{
+  "id": "A",
+  "display_name": "WebApp Project",
+  "created_at": "2025-12-06 04:52 PM",
+  "model_override": null
+}
+
+3.2 Chat Folder
+
+Example:
+
+/data/profiles/A/chats/B/
+
+
+Contains:
+
+meta.json
+messages.jsonl
+images/ (only if vision used)
+
+
+chat meta.json:
+
+{
+  "id": "B",
+  "display_name": "Backend planning",
+  "created_at": "2025-12-06 05:12 PM",
+  "model_override": null
+}
+
+4. Messages File
+messages.jsonl
+
+
+Each line = message.
+
+Example:
+
+{
+  "role": "user",
+  "text": "plan database indexing",
+  "ts": "Dec 06, 2025 05:14 PM"
+}
+
+
+Assistant:
+
+{
+  "role": "assistant",
+  "text": "To optimize writes in Postgres...",
+  "ts": "Dec 06, 2025 05:14 PM"
+}
+
+
+Messages are not rewritten.
+Appending only → zero corruption risk.
+
+5. Vision Storage
+
+If a message contains an image:
+
+/data/profiles/<profile_id>/chats/<chat_id>/images/<message_id>.jpg
+/data/profiles/<profile_id>/chats/<chat_id>/images/<message_id>_thumb.jpg
+
+
+Associated message JSON:
+
+{
+  "role": "user",
+  "text": "[Image] user prompt goes here",
+  "image": "KJ221_thumb.jpg",
+  "ts": "Dec 06, 2025 05:33 PM"
+}
+
+
+Assistant vision reply stored normally.
+
+6. Naming Strategy
+Profiles — Alphabetic
+A, B, C, … Z, AA, AB, AC … ZZ, AAA …
+
+Chats — Same scheme (separate alphabet counters per profile)
+A, B, C, … Z, AA, AB, …
+
+Message IDs
+KJ221    (base36-like sequential generator)
+
+
+Globally unique inside profile/chat.
+
+7. Timestamps
+
+Human-friendly + locale aware:
+
+Dec 06, 2025 05:14 PM
+
+
+Stored directly in message JSON.
+
+Chat timestamps are not UTC — this is intentional because chat = human memory.
+
+History timestamps are full ISO strings for sorting.
+
+8. Backup Strategy
+
+To back up the entire workspace:
+
+zip /history + /data/profiles
+
+
+To restore:
+
+unzip → same folder
+
+
+No rebuild or migrations required.
+
+9. Corruption Recovery
+
+Even if a .jsonl file is cut mid-write due to power loss:
+
+only the last line is affected
+
+rest remains readable
+
+Delete the corrupted last line and system will continue normally.
+
+10. Performance Notes
+Dataset size	Performance
+10k code logs	dashboard still fast
+100k chat messages	UI remains snappy
+very large chats	overlay summary used instead of loading full chat into model
+
+No SQL index needed.
+
+11. Evolution Compatibility
+
+Storage format was designed so future features won’t break backward compatibility.
+
+Upcoming extensions compatible under this format:
+
+Feature	Change
+memory embeddings	store additional .mem files alongside messages
+search	add inverted index per chat folder
+attachments	attachments/ folder at chat level
+realtime collab	additional fields edited_at / edited_by
+cloud sync	map /data/profiles to S3 / GDrive
+
+No core rewrite required.
+
+Summary
+Component	Format	Durability
+Code pipeline history	.jsonl	append-only / crash-safe
+Chat messages	.jsonl	append-only
+Chat images	.jpg + thumbnail	optional
+Metadata	.json	simple reads
+
+The key philosophy:
+
+Local-first, transparent, grep-friendly, no lock-in, no hidden blobs.
+
+End of STORAGE_FORMAT.md

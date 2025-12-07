@@ -1,0 +1,194 @@
+🔭 Purpose of This Document
+
+This file explains how to extend the Personal AI OS safely without breaking existing features.
+It covers:
+
+Adding new models
+
+Adding new agent types (pipelines)
+
+Adding new UI modules
+
+Adding new storage types
+
+Adding external APIs / automations
+
+Rules for backward compatibility
+
+🧱 Architecture Summary
+
+The system is modular by design:
+
+Layer	Responsibility
+config.py	Declares models, toggles, thresholds, URLs
+pipeline.py	Code, review, judge, study stages (non-chat)
+vision_pipeline.py	Image → text/analysis
+chat_storage.py	Profiles, chats, messages
+code_server.py	API router, UI endpoints
+dashboard.py	Logs for coder/reviewer/judge/study
+history.py	JSONL append-only logging
+
+Each module is replaceable without touching others if API shapes remain the same.
+
+🔌 Adding New LLM Models
+Step 1 — Add to AVAILABLE_MODELS in config.py
+AVAILABLE_MODELS = {
+    "qwen_coder_7b": "qwen2.5-coder:7b",
+    "deepseek_r1_8b": "deepseek-r1:8b",   # ← new
+}
+
+Step 2 — Pull via Ollama
+ollama pull deepseek-r1:8b
+
+Step 3 — Allow UI to select new model
+
+No extra work — the /api/chat/models endpoint auto exposes ALL values in AVAILABLE_MODELS.
+
+🤖 Adding a New Agent Type (Pipeline)
+
+Common use cases:
+
+Agent Type	Goal
+Planner	break request into tasks
+Database agent	SQL writing & validation
+API agent	call external APIs
+RAG retriever	vector search
+SAFETY agent	classify & downgrade risk
+General Pattern
+
+Create a new module, e.g. planner_pipeline.py
+
+Implement a function like:
+
+def run_planner(prompt: str) -> str:
+    return call_ollama(planner_prompt + prompt, PLANNER_MODEL_NAME)
+
+
+Add endpoint in code_server.py (API + UI optional)
+
+Blueprint:
+
+@router.post("/api/planner")
+def api_planner(req: PlannerRequest):
+    output = run_planner(req.prompt)
+    history_logger.log({...})
+    return {"output": output}
+
+
+(Optional) add UI section /planner similar to /chat
+
+💾 Adding New Storage Categories (attachments / docs / RAG)
+Goal	Recommended Location
+File uploads	profiles/<profile_id>/<chat>/attachments/
+Knowledge docs	profiles/<profile_id>/kb/
+Vector embeddings	profiles/<profile_id>/vectors/
+Rule
+
+Never store custom data in:
+
+history/
+
+
+because it is rotation-based and not persistent.
+
+🌐 Integrating External APIs (Automation)
+
+Strategy:
+
+Create agents/ folder (if not already)
+
+Add file, e.g. agents/flights.py
+
+Authenticate / call external API
+
+Connect to chat via tool-call pattern
+
+Example minimal safe bridge:
+
+def flight_lookup(city_from, city_to, date):
+    # do requests to API
+    return result
+
+
+Link to chat via special command:
+
+"//flight from=DEL to=DXB date=2025-01-14"
+
+
+or a dedicated endpoint.
+
+🧩 Extending UI
+
+The clean rule:
+
+Never modify chat HTML directly if change can be done via API.
+
+If new module requires new page:
+
+Duplicate structure of /chat or /dashboard:
+
+/planner
+/auditor
+/automation
+
+If new sidebar panel needed:
+
+Add an entry button in header, not inside chat window.
+
+🔄 Version-Safe Upgrade Rules
+Component	Safe to Replace	Must Not Touch
+.py backend files	✔	❌ history/, ❌ profiles/
+/chat UI	✔	❌ storage format
+Config toggles	✔	❌ change existing key names
+Model names	✔	❌ remove ones in active profile override
+
+If a profile references a removed model → UI falls back to global default.
+
+🎛 Feature Toggles (recommended)
+
+In config.py:
+
+VISION_ENABLED = True
+RAG_ENABLED = False
+AUTOMATION_ENABLED = False
+PLANNER_ENABLED = False
+
+
+→ Extend system modularly without code removal.
+
+🧠 Adding a New Skill Without Rewriting the System
+
+Flow to extend safely:
+
+1. New prompt → prompts.py
+2. New model (optional) → config.py
+3. New run_<agent>() function → pipeline or new pipeline file
+4. New API route → code_server.py
+5. New UI entry point → HTML (optional)
+6. Log results → history_logger.log() (optional)
+
+🧬 Behavioral Consistency Rules
+
+To avoid conflicts between agents:
+
+Case	What to do
+Code task	/api/code
+Study lesson	/api/study
+Normal conversation	/api/chat
+Vision	/api/chat/vision
+Planner / automation	new endpoint
+
+Never mix goals inside a single pipeline.
+
+🚧 Debugging Extensions
+Issue	Fix
+Chat UI not refreshing	Console → check /api/chat/messages
+New API 404	Router not added to FastAPI app
+Model call fails	Check model pulled + config
+Vision crashes	Check MIME + python-multipart
+📌 Golden Rule
+
+Add new features next to existing ones, never inside them,
+so future upgrades do not break internal logic.
+
+End of EXTENSIBILITY.md

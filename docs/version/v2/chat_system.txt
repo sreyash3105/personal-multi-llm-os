@@ -1,0 +1,189 @@
+Overview
+
+The Chat System enables multiple long-term conversational workspaces inside the Local AI OS.
+It supports:
+
+Multiple profiles (e.g., Travel Project, Client Work, Personal Study)
+
+Multiple chats inside each profile
+
+Per-profile and per-chat model override
+
+Image / vision messages
+
+Persistent searchable history
+
+Profile-wide summarization
+
+The chat system is independent from the coding pipeline and dashboard. Its purpose is productivity and context retention for real projects.
+
+1. Data Model
+Profiles
+
+A profile represents a project or domain (e.g., “Travel Automation Client”).
+
+Field	Description
+id	Auto-incrementing alphabetic (A, B, … Z, AA, AB, …)
+display_name	Optional user-friendly name
+model_override	Optional default model override
+created_at	Timestamp
+chats	List of Chat objects
+Chats
+
+A chat represents a workspace within a profile (e.g., “DB design”, “API documentation”).
+Alphabetic ID sequence like profiles.
+
+Field	Description
+id	Alphabetic label
+display_name	Optional custom name
+model_override	Optional override (highest priority)
+messages	List of messages
+Messages
+Field	Description
+role	user or assistant
+text	message content
+ts	timestamp (dd MMM yyyy, hh:mm AM/PM)
+image	optional thumbnail filename (for vision uploads)
+
+Messages are stored permanently as JSON; no token trimming.
+
+2. Model Resolution Priority
+
+Model selection is evaluated per message using:
+
+chat.model_override
+  > profile.model_override
+  > global CHAT_MODEL_NAME (config.py)
+
+
+This lets the user work with different LLM personalities or strengths inside the same project.
+
+3. Message Generation Flow
+(messages history)
+     ↓
+SYSTEM: CHAT_SYSTEM_PROMPT
+     ↓
+(concatenated ROLE: text conversation)
+     ↓
+USER: <new prompt>
+     ↓
+LLM generates ASSISTANT response
+     ↓
+Store both messages to disk
+     ↓
+Return to UI
+
+
+No judge/escalation occurs in chat.
+This keeps chat fast and natural.
+
+4. Vision Messages
+
+The endpoint /api/chat/vision allows uploading an image plus optional text.
+
+Behavior:
+
+Image is saved to disk with thumbnail
+
+A synthetic user message is recorded as:
+
+[Image] <optional prompt>
+
+
+The vision model parses and describes the image
+
+Output is appended as an assistant message
+
+Image appears at the top of the corresponding bubble in the UI
+
+Vision does not influence coding pipeline.
+
+5. Profile Summaries
+
+/api/chat/profile_summary aggregates all chats of a profile and creates:
+
+Bullet-point summary per chat
+
+Overall profile summary connecting decisions and unresolved items
+
+Summary uses the profile chosen model override, or global fallback.
+
+Summaries are logged in history as mode chat_profile_summary.
+
+6. Timestamps
+
+Formatting:
+
+15 Feb 2026, 09:42 PM
+
+
+Stored as text inside message; no timezone sensitivity required.
+Consistent timestamps prevent confusion across devices.
+
+7. Storage Design
+
+Chat storage is totally independent of history for coding pipeline.
+
+Coding pipeline → /history/*.jsonl
+
+Chat system → persistent JSON store, hierarchical by profile + chat
+
+No chat messages are removed automatically. Only deletion happens when the user deletes a chat or profile.
+
+8. Reason for Separation from Coding Interface
+Coding API	Chat API
+Single turn tasks	Long multi-turn discussions
+Judgment & auto-review	Conversational
+No feelings	Expressive
+Deterministic	Flexible
+Strict JSON logging	Memory-like continuity
+
+This prevents chat clutter from polluting the coding dashboard.
+
+9. Future Enhancements (Supported by design)
+Feature	Ready?
+Voice messages TTS/STT	yes
+File attachments	yes
+Tool calling (db, API)	yes
+Agent switching mid-chat	yes
+Memory retrieval per profile	yes
+Vector search across chats	yes
+Export chat to Markdown/PDF	yes
+
+No redesign is required to add these.
+
+10. API Index
+Method	Endpoint	Purpose
+GET	/api/chat/profiles	list profiles
+POST	/api/chat/profiles	create profile
+PATCH	/api/chat/profiles/{profile_id}	rename / override model
+DELETE	/api/chat/profiles/{profile_id}	delete profile + chats
+GET	/api/chat/chats?profile_id=p	list chats
+POST	/api/chat/chats	create chat
+PATCH	/api/chat/chats/{p}/{c}	rename / override
+DELETE	/api/chat/chats/{p}/{c}	delete chat
+GET	/api/chat/messages?profile_id=p&chat_id=c	list messages
+POST	/api/chat	send chat message
+POST	/api/chat/vision	send vision message
+POST	/api/chat/profile_summary	summarize profile
+GET	/api/chat/models	list selectable chat models in UI
+
+All APIs return JSON with no HTML.
+
+11. Guarantees
+
+The chat system promises:
+
+Project separation through profiles
+
+Unmixed conversations through chats
+
+Freedom in model personality per workspace
+
+Rich UI without affecting system stability
+
+No loss of context, no token wipe
+
+Fully local / LAN-only execution
+
+End of CHAT_SYSTEM.md

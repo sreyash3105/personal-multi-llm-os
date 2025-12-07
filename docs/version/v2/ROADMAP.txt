@@ -1,0 +1,118 @@
+Objective
+
+This roadmap defines future development phases, focusing on automation, reliability, and scalability — without breaking the core experience of:
+
+Local-first
+
+Offline-capable
+
+Modular
+
+Developer-oriented
+
+🚀 Version Timeline
+Version	State	Theme
+V2 (current)	Finished	Personal AI OS with Code + Study + Vision + Multi-Profile Chat
+V3 (next)	In development	Automations / Tools / API Integrations / RAG
+V4 (future)	Planned	Autonomous Workflows & Multi-Agent System
+📦 V2 → V3 Upgrade Goals
+💡 V3 focuses on connecting AI to the real world
+Category	Goal
+📦 Automations	Assistant can execute tools & APIs
+🔍 RAG	Private documents → indexed → retrieved context → chat
+🧾 File memory	Upload PDFs, DOCX, folders and store them in profile
+🔌 Cloud APIs	Travel / Emails / Jira / Notion / DB / Stripe etc
+▶️ Actions	“Book flight”, “generate proposal”, “update website”
+⏳ Schedulers	Automated periodic tasks (cron-like)
+Mandatory base additions
+
+/api/tools/* endpoint namespace
+
+tools/ directory for pluggable automations
+
+RAG storage: profiles/<id>/kb/ + embeddings store
+
+Permissions system: allow / deny tool execution
+
+♟ V3 Internal System Design
+
+A Tool-call architecture
+
+User prompt → LLM → detects required tool → tool executes → returns result → LLM continues
+
+
+LLM response format example:
+
+{
+  "tool": "flight_search",
+  "args": { "from": "DEL", "to": "DXB", "date": "2025-01-22" }
+}
+
+
+Then pipeline executes tool → returns → adds result back to chat.
+
+📌 V3 Feature List Breakdown
+1. 🔧 Tools System
+Priority	Tool
+⭐⭐⭐⭐⭐	Python eval sandbox (code execution)
+⭐⭐⭐⭐	HTTP caller
+⭐⭐⭐	File memory loader
+⭐⭐⭐	Search (Bing / Google / DuckDuckGo)
+⭐⭐	Email reader/sender
+⭐	Shell command runner
+2. 📚 Private Knowledge Base (RAG)
+
+Drop folder / upload zip → auto-index
+
+Chat aware of profile-specific docs
+
+Chunk embeddings per profile
+
+No cloud, purely local
+
+3. 🌍 API Packs (optional installs)
+Pack	APIs
+Travel Pack	Skyscanner / Booking / TripAdvisor / Airbnb
+Business Pack	Notion / Trello / Jira / Gmail / Slack
+E-commerce Pack	Stripe / Razorpay / Shopify
+4. 🧠 Planning + Execution Flow
+
+Pipeline evolves from:
+
+Prompt → Code/Study/Vision/Chat
+
+
+into:
+
+Prompt → Planner → (RAG?) → Tool executor → LLM summarizer → Final reply
+
+🔥 V4 (Long-term Vision)
+🎛 Full Autonomous Personal Workspace
+Feature	Description
+Multi-agents	Designer, Researcher, Developer, Tester, Marketer
+Shared memory	Persistent improvement across projects
+Self-upgrading	System rewrites own tools as needed
+Full workflow execution	Idea → Docs → Code → Test → Deploy
+Project brain	Automatic project documentation + reports
+🧩 Extensions Strategy
+Target	Max Safety	Max Power
+Developer tools	Direct execution allowed	
+Business APIs	Token vault required	
+Finance APIs	2FA + approval	
+OS shell	Disabled until manually enabled	
+🚫 What we will never sacrifice
+Rule	Reason
+Local-first by default	Privacy + speed
+User control	No hidden automation
+No silent internet calls	Transparency
+No training on private data	Safety
+🪜 Release Plan Estimation
+Phase	Time	Result
+V3-alpha	4–6 weeks	RAG + Tool execution
+V3-beta	8 weeks	API Packs + Scheduling
+V3-stable	12 weeks	Seamless business automations
+V4-alpha	When ready	Multi-Agent system
+🔥 Quick Summary
+V2 = High-power personal assistant
+V3 = AI that can take actions + use tools + read documents
+V4 = AI that can run full workflows and manage projects end-to-end

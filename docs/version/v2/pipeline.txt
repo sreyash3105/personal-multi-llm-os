@@ -1,0 +1,206 @@
+Code Generation & Review Pipeline
+
+This document describes the complete automated coding pipeline used by the Local AI Operating System. It explains the execution stages, routing logic, escalation rules, metadata logging, and history context handling.
+
+1. Goals of the Pipeline
+
+Produce high-quality runnable code from natural language instructions.
+
+Guarantee reliability through automated review and evaluation.
+
+Minimize latency by using lightweight judge scoring before heavy review.
+
+Maintain auditability and traceability via logging.
+
+The pipeline focuses on correctness, not hallucinated features.
+
+2. Supported Modes
+
+Modes are controlled by prompt tags:
+
+Tag	Internal Mode	Behavior
+(no tag)	code_reviewed	coder → judge → reviewer if needed
+///raw	code_raw	coder only
+///review-only	review_only	reviewer only (input treated as draft code)
+///ctx	code_reviewed_ctx	same as default, but with history context
+///continue	code_reviewed_ctx	alias for ///ctx
+
+Mode resolution is handled by extract_mode_and_prompt().
+
+3. Stage: Coder
+
+Model: CODER_MODEL_NAME
+
+Output rules:
+
+code only
+
+no markdown fences
+
+no natural language narration
+
+Coder prompt summary:
+
+Output ONLY runnable code. No explanations. No markdown fences.
+
+
+The result of this stage is considered draft code.
+
+4. Stage: Judge
+
+Model: JUDGE_MODEL_NAME
+
+Role: evaluate coder’s draft and reviewer’s output
+
+Output format (strict JSON):
+
+{
+  "confidence_score": 1-10,
+  "conflict_score": 1-10,
+  "judgement_summary": "<single sentence>"
+}
+
+
+Scores are interpreted as:
+
+Condition	Result
+confidence < threshold	escalate
+conflict > threshold	escalate
+
+Thresholds are defined in config.py:
+
+ESCALATION_CONFIDENCE_THRESHOLD = 8
+ESCALATION_CONFLICT_THRESHOLD = 6
+
+5. Stage: Reviewer (conditional)
+
+Model: REVIEWER_MODEL_NAME
+
+Only invoked when:
+
+mode = review_only, or
+
+judge indicates escalation
+
+Rules:
+
+Correct logic errors
+
+Improve safety & structure
+
+Maintain original intent
+
+Return only final improved code, no commentary
+
+If reviewer cannot safely fix code due to missing context, they may prepend:
+
+# REVIEWER_NOTE: reason here
+
+6. Auto-Escalation Logic
+
+Decision:
+
+coder_output
+    ↓
+judge
+    ↓
+if (confidence < 8) OR (conflict > 6):
+        → reviewer
+else
+        → return coder_output
+
+
+Escalation metadata is logged but not exposed to the final user output.
+
+7. History Context (optional)
+
+Enabled when mode = code_reviewed_ctx or ///continue.
+
+System retrieves recent history via load_recent_records().
+
+For each interaction, compact representation:
+
+User request:
+<request>
+
+Assistant code:
+<final output>
+
+
+History block is prepended before the new prompt.
+
+Purpose: allow multi-step projects without contaminating chat conversation memory.
+
+8. Final Output to Client
+
+The pipeline always returns this shape:
+
+{
+  "output": "<final code>"
+}
+
+
+No judge or escalation metadata is included in the API response.
+All diagnostic data is logged separately.
+
+9. History Logging
+
+Every pipeline execution stores:
+
+ts
+mode
+original_prompt
+normalized_prompt
+coder_output
+reviewer_output
+final_output
+escalated
+escalation_reason
+judge (dict with scores and raw response)
+
+
+Files: JSONL format in /history, auto-rotating based on HISTORY_MAX_ENTRIES.
+
+Consumers:
+
+dashboard timeline
+
+analytics
+
+future self-training and QA systems
+
+10. Data Flow Diagram
+User prompt
+      ↓
+extract_mode_and_prompt()
+      ↓
+run_coder()
+      ↓
+run_judge()
+      ↓
+ ┌──────────── Should Escalate? ────────────┐
+ │   confidence < 8 OR conflict > 6         │
+ └──────────────────────────────────────────┘
+           ↓                               ↓
+        yes                                no
+         ↓                                  ↓
+   run_reviewer()                   return coder_output
+         ↓
+  return reviewer_output
+
+11. Extensibility (Built-In Upgrade Paths)
+
+The architecture supports additional agents without redesigning the core pipeline:
+
+Future Stage	Status
+security reviewer	compatible
+test generator	compatible
+planning agent	compatible
+multiple reviewer voting	compatible
+execution sandbox + retry loop	compatible
+tree-of-thought	compatible
+on-device fine-tune	compatible
+
+No existing API contracts change when additional models are inserted.
+
+End of PIPELINE.md

@@ -1,0 +1,190 @@
+🚀 Overview
+
+This document explains how to deploy and run the Personal AI OS (FastAPI backend + Chat & Dashboard UI) on a local PC server, accessible from the same PC or any device in the LAN (laptop, phone, tablet).
+
+📁 Folder Structure (reference)
+AI_Assistant/
+└── server/
+    ├── code_server.py
+    ├── pipeline.py
+    ├── vision_pipeline.py
+    ├── config.py
+    ├── prompts.py
+    ├── chat_storage.py
+    ├── history.py
+    ├── dashboard.py
+    ├── venv/               ← Python virtual environment
+    └── history/            ← Auto-generated logs of interactions
+
+🧱 Requirements
+Component	Required
+OS	Windows 10/11 (PC) or Linux
+Python	3.10 – 3.12
+Memory	≥ 16 GB recommended
+GPU	Optional — CPU works too
+LLM Backend	Ollama running locally
+Browser	Chrome / Edge / Firefox
+🔌 Step 1 — Install Python Dependencies
+
+Run inside the server directory:
+
+python -m venv venv
+venv\Scripts\activate      # Windows
+# OR
+source venv/bin/activate   # Linux
+
+pip install -r requirements.txt
+
+Minimum required packages
+fastapi
+uvicorn
+requests
+pydantic
+python-multipart
+
+
+If something is missing during runtime, install it manually.
+
+🤖 Step 2 — Install LLM Models via Ollama
+
+Example (qwen, llamacoder, codestral, llama3 etc.):
+
+ollama pull qwen2.5-coder:7b
+ollama pull codestral:22b
+ollama pull qwen2.5:14b
+ollama pull llava:7b    # for vision
+
+
+If a model is not pulled, system will crash when selected.
+
+⚙️ Step 3 — Minimal Config (config.py)
+
+Example values:
+
+OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+
+CHAT_MODEL_NAME = "qwen2.5-coder:7b"
+VISION_MODEL_NAME = "llava:7b"
+VISION_ENABLED = True
+
+HISTORY_DIR = "history"
+HISTORY_MAX_ENTRIES = 1000
+
+
+After modifying config.py, restart the server.
+
+▶️ Step 4 — Run the Server
+
+From inside the server folder (venv active):
+
+uvicorn code_server:app --host 0.0.0.0 --port 8100 --reload
+
+Expected output
+Uvicorn running on http://0.0.0.0:8100 (Press CTRL+C to quit)
+
+🌐 Step 5 — Access From Browser
+On the PC (server)
+http://localhost:8100/chat
+http://localhost:8100/dashboard
+
+On another device in same LAN (laptop/phone)
+
+Replace IP with PC’s IPv4 address:
+
+http://10.x.x.x:8100/chat
+http://10.x.x.x:8100/dashboard
+
+
+Example:
+
+http://10.1.80.233:8100/chat
+
+🔥 Firewall Allow (Windows)
+
+If laptop cannot access UI:
+
+Search “Windows Defender Firewall”
+
+Click Allow an app or feature
+
+Add Python and Uvicorn to allowed apps
+
+Allow on Private Network
+
+If still blocked, allow port:
+
+Port: 8100
+Protocol: TCP
+Scope: Private
+
+🔁 Updating the System Safely
+
+When updating files do NOT delete these folders:
+
+history/
+profiles/        ← if exists
+
+
+Safe update order:
+
+1. Stop Uvicorn
+2. Replace .py files with new versions
+3. Start Uvicorn again
+
+
+If dependencies changed:
+
+pip install -r requirements.txt
+
+🔒 Data Storage Notes
+Stored	Location
+Dashboard interaction logs	history/
+Profiles, chats & messages	profiles/ (JSON)
+Uploaded image thumbnails	profiles/<profile>/chat/<chat>/attachments/
+
+You can back them up and restore anytime.
+
+🧩 Running on Boot (Optional)
+
+Create .bat file:
+
+cd D:\AI_Assistant\server
+venv\Scripts\activate
+uvicorn code_server:app --host 0.0.0.0 --port 8100
+
+
+Add to:
+
+shell:startup
+
+🧪 Health Check
+
+To verify server is online:
+
+http://<PC_IP>:8100/health
+
+
+Should return:
+
+{"status": "ok"}
+
+🧯 Quick Troubleshooting
+Issue	Fix
+Form data requires "python-multipart"	pip install python-multipart
+Model not found	ollama pull <model>
+UI shows 0 profiles	Auto-created on first run
+Laptop can’t connect	Windows firewall or wrong IP
+Vision endpoint crashes	VISION_ENABLED = True + pull LLaVA model
+✔️ Deployment Status
+
+If you successfully see:
+
+/chat UI working
+/dashboard UI working
+messages saving
+vision responding (optional)
+
+
+Deployment is complete.
+
+End of DEPLOYMENT.md

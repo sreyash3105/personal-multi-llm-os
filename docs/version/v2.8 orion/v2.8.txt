@@ -1,0 +1,237 @@
+🏷 Version Name
+V2.8 — Orion Stable Release
+
+Reasoning:
+
+V1 = First documented release
+
+V2 = Pipeline + Dashboard + Vision + Chat era
+
+V2.8 = Stable, feature-rich, before next major Tools runtime / Multi-agent upgrades
+
+📦 V2.8 — ORION STABLE RELEASE (MASTER HANDOVER DOCUMENT)
+🔰 Overview
+
+This version of Personal Local AI OS is a local-first offline Jarvis-style assistant running on a desktop server and operated from a laptop over LAN. It supports:
+
+Multi-model code generation with escalation
+
+Study & teaching mode
+
+Vision for OCR / Debug / Screenshot interpretation
+
+Multi-profile + multi-chat workspace
+
+Local knowledge base per profile
+
+Full dashboard trace
+
+Rotating JSONL history
+
+Configurable model roles
+
+Git-ready project structure
+
+This version is confirmed stable and runnable end-to-end.
+
+🧠 System Capabilities
+Capability	Status
+Code pipeline (coder → judge → reviewer → escalation)	✔ Stable
+Study tutoring	✔ Stable
+Vision image processing	✔ Stable
+Dashboard & history	✔ Stable
+Multi-profile chat workspace	✔ Stable
+Profile knowledge base	✔ Stable
+Tools runtime	❌ Not active in this version
+Multi-agent	❌ Not included
+🗂 Folder Structure (V2.8)
+/server
+ ├─ code_server.py      ← main FastAPI backend entrypoint
+ ├─ config.py           ← model registry & global flags
+ ├─ pipeline.py         ← coder / reviewer / judge / study
+ ├─ vision_pipeline.py  ← vision model wrapper
+ ├─ prompts.py          ← system prompts
+ ├─ chat_ui.py          ← web-based chat page (HTML + JS)
+ ├─ chat_storage.py     ← profiles + chats + messages (JSON)
+ ├─ history.py          ← JSONL rotating logger
+ ├─ dashboard.py        ← cognition trace visualizer
+ ├─ static/chat.html    ← final rendered chat UI
+ ├─ profile_kb.py       ← per-profile knowledge base
+ ├─ legacy/             ← ✔ archived experimental modules
+ ├─ .gitignore
+ ├─ venv/
+ ├─ history/
+ └─ models/ (optional if storing downloaded GGUF)
+
+🔧 Configuration (config.py)
+
+All Ollama model names stored in AVAILABLE_MODELS
+
+Per-role selection:
+
+Role	Default Model
+Coder	qwen2.5-coder:7b
+Reviewer	codestral:22b
+Judge	qwen2.5:7b
+Study	qwen2.5:14b
+Chat	llama3:8b
+Vision	llava:7b
+
+Other toggles:
+
+JUDGE_ENABLED = True
+ESCALATION_ENABLED = True
+VISION_ENABLED = True
+
+🧩 Core Modules
+1️⃣ Coding Engine
+
+File: pipeline.py
+
+Features:
+
+Code-only enforcement
+
+Reviewer safety net
+
+Judge model scoring
+
+Auto-escalation triggers when:
+
+confidence < 8
+
+conflict > 6
+
+2️⃣ Study Mode
+
+Tags supported:
+
+///short
+
+///deep
+
+///quiz
+
+default = normal learning explanation
+
+3️⃣ Vision
+
+File: vision_pipeline.py
+
+Modes:
+
+auto
+
+describe
+
+ocr
+
+code
+
+debug
+
+4️⃣ Chat Workspace
+
+File: chat_ui.py
+
+Profile selector
+
+Multiple chats per profile
+
+Fast response button + Smart response button
+
+Auto scroll
+
+Optional image upload (vision in chat)
+
+Stores chats in JSON safely
+
+5️⃣ Dashboard
+
+File: dashboard.py
+
+Shows:
+
+Mode
+
+Prompt preview
+
+Final output preview
+
+Escalation
+
+Confidence + Conflict scores
+
+Judge summary
+
+Full trace on click expand
+
+🔐 Storage System
+Component	Storage Method
+chats	JSON (chat_storage.py)
+KB notes	JSON (profile_kb.py)
+history	JSONL (history/*.jsonl)
+
+Future releases will optionally migrate to SQLite.
+
+🧾 Git Tracking
+
+Included in repository:
+
+All source modules
+
+UI static files
+
+Prompts
+
+Config
+
+Ignored:
+
+venv/
+models/
+*.log
+__pycache__/
+history/
+
+📌 Rollback / Failure Handling
+
+Failures from experimental branches (Tools Runtime / New JS Parser) are archived inside:
+
+/legacy/
+
+
+Purpose:
+
+preserve lessons
+
+prevent accidental re-execution
+
+allow controlled reintroduction in V3+
+
+If needed, refer to Failure Report – Tools Runtime upgrade (rollback).
+
+🧭 Upgrade Roadmap From This Release
+Next Step	Version Target
+Tools system (LLM executable actions)	V3.0
+Chat + Vision + Tools fusion	V3.2
+Scheduler + background agents	V3.4
+Multi-agent orchestrator	V4.0
+🟢 Final Status of V2.8 — ORION STABLE RELEASE
+Component	Status
+Backend	🟢 Stable
+Chat UI	🟢 Stable
+Dashboard	🟢 Stable
+Vision	🟢 Stable
+Code + Study pipelines	🟢 Stable
+KB	🟢 Stable
+Tools runtime	❌ Archived in legacy (not active)
+🧩 Deployment Command Reminder
+cd D:\AI_Assistant\server
+venv\Scripts\activate
+uvicorn code_server:app --host 0.0.0.0 --port 8000 --reload
+
+
+LAN access (laptop):
+
+http://<PC-IP>:8000/chat
