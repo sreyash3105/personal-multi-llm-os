@@ -1,0 +1,417 @@
+from typing import Tuple, Dict, Any
+
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+
+from .pipeline import (
+    run_coder,
+    run_reviewer,
+    run_judge,
+    run_study,
+    extract_mode_and_prompt,
+    build_history_context,
+    extract_study_style_and_prompt,
+)
+from .history import history_logger
+from .config import (
+    ESCALATION_ENABLED,
+    ESCALATION_CONFIDENCE_THRESHOLD,
+    ESCALATION_CONFLICT_THRESHOLD,
+    VISION_ENABLED,
+)
+from .dashboard import render_dashboard
+from .vision_pipeline import run_vision
+from .chat.router import router as chat_router
+from .tools_api import router as tools_router
+from .vision_ui import router as vision_router  # will create this file too
+
+
+app = FastAPI(title="Local Code, Study, Chat & Tools Assistant")
+
+# Mount feature routers
+app.include_router(chat_router)
+app.include_router(tools_router)
+app.include_router(vision_router)
+
+
+# =========================
+# API models
+# =========================
+
+class CodeRequest(BaseModel):
+    prompt: str
+
+
+class CodeResponse(BaseModel):
+    output: str
+
+
+class StudyRequest(BaseModel):
+    prompt: str
+
+
+class StudyResponse(BaseModel):
+    output: str
+
+
+class VisionResponse(BaseModel):
+    output: str
+
+
+# =========================
+# Escalation helpers
+# =========================
+
+def should_escalate(judge_result: Dict[str, Any]) -> Tuple[bool, str]:
+    """
+    Decide whether to escalate based on judge scores.
+    Returns (escalate: bool, reason: str).
+    """
+    if not judge_result:
+        return False, ""
+
+    cs = judge_result.get("confidence_score")
+    cf = judge_result.get("conflict_score")
+
+    reasons = []
+
+    try:
+        if cs is not None and int(cs) < ESCALATION_CONFIDENCE_THRESHOLD:
+            reasons.append(f"low confidence ({cs})")
+    except Exception:
+        pass
+
+    try:
+        if cf is not None and int(cf) > ESCALATION_CONFLICT_THRESHOLD:
+            reasons.append(f"high conflict ({cf})")
+    except Exception:
+        pass
+
+    if not reasons:
+        return False, ""
+
+    return True, "; ".join(reasons)
+
+
+def inject_escalation_comment(code: str, reason: str) -> str:
+    """
+    Add a small comment at the top of the final code when escalation happened.
+    Uses a '#' comment for now (Python/shell style, harmless in most languages).
+    """
+    if not code:
+        return code
+
+    comment = f"# ESCALATION: {reason or 'auto-escalated to heavy review'}"
+
+    stripped = code.lstrip()
+    if stripped.startswith(comment):
+        return code
+
+    return comment + "\n" + code
+
+
+# =========================
+# /api/code endpoint
+# =========================
+
+@app.post("/api/code", response_model=CodeResponse)
+def generate_code(req: CodeRequest):
+    """
+    Main endpoint used by the laptop client for coding tasks.
+
+    Modes (from first line tags):
+
+    - default (no tag):
+        prompt -> fast coder [judge]
+            -> direct final (if high confidence)
+            -> OR escalate to reviewer (heavy) + comment
+
+    - "///raw":
+        prompt -> coder only -> final code
+
+    - "///review-only":
+        prompt (treated as draft code) -> reviewer only -> final code
+
+    - "///ctx" or "///continue":
+        (history context + current prompt)
+          -> fast coder [judge]
+          -> direct final or escalate to reviewer (same as default)
+    """
+    mode, prompt = extract_mode_and_prompt(req.prompt)
+
+    if not prompt:
+        return CodeResponse(output="(Empty prompt)")
+
+    coder_output = None
+    reviewer_output = None
+    final_output = None
+    judge_result: Dict[str, Any] = {}
+    escalated = False
+    escalation_reason = ""
+
+    # -------- Mode: coder only --------
+    if mode == "code_raw":
+        coder_output = run_coder(prompt)
+        final_output = coder_output
+
+        # Judge (for logging / dashboard only)
+        try:
+            judge_result = run_judge(
+                original_prompt=prompt,
+                coder_output=coder_output or "",
+                reviewer_output=final_output or "",
+            )
+        except Exception as e:
+            judge_result = {
+                "confidence_score": None,
+                "conflict_score": None,
+                "judgement_summary": f"Judge failed: {e}",
+                "raw_response": "",
+                "parse_error": str(e),
+            }
+
+    # -------- Mode: review only --------
+    elif mode == "review_only":
+        try:
+            reviewer_output = run_reviewer("", prompt)
+            final_output = reviewer_output
+        except Exception:
+            final_output = prompt
+
+        try:
+            judge_result = run_judge(
+                original_prompt=prompt,
+                coder_output="",
+                reviewer_output=final_output or "",
+            )
+        except Exception as e:
+            judge_result = {
+                "confidence_score": None,
+                "conflict_score": None,
+                "judgement_summary": f"Judge failed: {e}",
+                "raw_response": "",
+                "parse_error": str(e),
+            }
+
+    # -------- Mode: with history context --------
+    elif mode == "code_reviewed_ctx":
+        history_ctx = build_history_context(max_items=5)
+        prompt_with_ctx = prompt
+        if history_ctx:
+            prompt_with_ctx = (
+                "Here are some recent interactions between the user and the assistant.\n"
+                "Use them as context, but treat the CURRENT REQUEST as primary.\n\n"
+                + history_ctx
+                + "\n\nCURRENT REQUEST:\n"
+                + prompt
+            )
+
+        # Step 1: fast coder
+        coder_output = run_coder(prompt_with_ctx)
+
+        # Step 2: judge coder-only
+        try:
+            judge_result = run_judge(
+                original_prompt=prompt_with_ctx,
+                coder_output=coder_output or "",
+                reviewer_output=coder_output or "",
+            )
+        except Exception as e:
+            judge_result = {
+                "confidence_score": None,
+                "conflict_score": None,
+                "judgement_summary": f"Judge failed: {e}",
+                "raw_response": "",
+                "parse_error": str(e),
+            }
+
+        # Step 3: decide escalation
+        if ESCALATION_ENABLED:
+            do_escalate, reason = should_escalate(judge_result)
+        else:
+            do_escalate, reason = False, ""
+
+        if ESCALATION_ENABLED and do_escalate:
+            escalated = True
+            escalation_reason = reason or "auto-escalated to heavy review"
+            try:
+                reviewer_output = run_reviewer(prompt_with_ctx, coder_output)
+                final_output = inject_escalation_comment(
+                    reviewer_output or coder_output, escalation_reason
+                )
+            except Exception:
+                final_output = inject_escalation_comment(coder_output, escalation_reason)
+        else:
+            reviewer_output = None
+            final_output = coder_output
+
+    # -------- Default: no tag --------
+    else:  # DEFAULT_MODE: code_reviewed
+        # Step 1: fast coder
+        coder_output = run_coder(prompt)
+
+        # Step 2: judge coder-only
+        try:
+            judge_result = run_judge(
+                original_prompt=prompt,
+                coder_output=coder_output or "",
+                reviewer_output=coder_output or "",
+            )
+        except Exception as e:
+            judge_result = {
+                "confidence_score": None,
+                "conflict_score": None,
+                "judgement_summary": f"Judge failed: {e}",
+                "raw_response": "",
+                "parse_error": str(e),
+            }
+
+        # Step 3: decide escalation
+        if ESCALATION_ENABLED:
+            do_escalate, reason = should_escalate(judge_result)
+        else:
+            do_escalate, reason = False, ""
+
+        if ESCALATION_ENABLED and do_escalate:
+            escalated = True
+            escalation_reason = reason or "auto-escalated to heavy review"
+            try:
+                reviewer_output = run_reviewer(prompt, coder_output)
+                final_output = inject_escalation_comment(
+                    reviewer_output or coder_output, escalation_reason
+                )
+            except Exception:
+                final_output = inject_escalation_comment(coder_output, escalation_reason)
+        else:
+            reviewer_output = None
+            final_output = coder_output
+
+    # ---- History logging ----
+    history_logger.log(
+        {
+            "mode": mode,
+            "original_prompt": req.prompt,
+            "normalized_prompt": prompt,
+            "coder_output": coder_output,
+            "reviewer_output": reviewer_output,
+            "final_output": final_output,
+            "escalated": escalated,
+            "escalation_reason": escalation_reason,
+            "judge": {
+                "confidence_score": judge_result.get("confidence_score") if judge_result else None,
+                "conflict_score": judge_result.get("conflict_score") if judge_result else None,
+                "judgement_summary": judge_result.get("judgement_summary") if judge_result else None,
+                "raw_response": judge_result.get("raw_response") if judge_result else None,
+                "parse_error": judge_result.get("parse_error") if judge_result else None,
+            },
+        }
+    )
+
+    return CodeResponse(output=final_output or "")
+
+
+# =========================
+# /api/study endpoint
+# =========================
+
+@app.post("/api/study", response_model=StudyResponse)
+def study(req: StudyRequest):
+    """
+    Study / teaching endpoint.
+
+    Tags (first line):
+      ///short  -> short explanation
+      ///deep   -> deep dive
+      ///quiz   -> quiz mode
+      (no tag) -> normal explanation
+    """
+    style, prompt = extract_study_style_and_prompt(req.prompt)
+
+    if not prompt:
+        return StudyResponse(output="(Empty study prompt)")
+
+    study_output = run_study(prompt, style=style)
+
+    # Log as a separate mode for dashboard
+    history_logger.log(
+        {
+            "mode": f"study_{style}",
+            "original_prompt": req.prompt,
+            "normalized_prompt": prompt,
+            "coder_output": None,
+            "reviewer_output": None,
+            "final_output": study_output,
+            "escalated": False,
+            "escalation_reason": "",
+            "judge": None,
+        }
+    )
+
+    return StudyResponse(output=study_output)
+
+
+# =========================
+# /api/vision endpoint
+# =========================
+
+@app.post("/api/vision", response_model=VisionResponse)
+async def vision_endpoint(
+    file: UploadFile = File(...),
+    prompt: str = Form(""),
+    mode: str = Form("auto"),
+):
+    """
+    Vision / image endpoint.
+
+    Usage:
+      - Upload an image (screenshot, UI, code, error, photo).
+      - Optional text prompt.
+      - Optional mode:
+          "auto" (default)
+          "describe"
+          "ocr"
+          "code"
+          "debug"
+    """
+    if not VISION_ENABLED:
+        return VisionResponse(output="Vision is disabled in config (VISION_ENABLED = False).")
+
+    image_bytes = await file.read()
+    if not image_bytes:
+        return VisionResponse(output="(No image data received.)")
+
+    vision_output = run_vision(
+        image_bytes=image_bytes,
+        user_prompt=prompt or "",
+        mode=mode or "auto",
+    )
+
+    # Log to history for dashboard
+    history_logger.log(
+        {
+            "mode": f"vision_{mode or 'auto'}",
+            "original_prompt": prompt,
+            "normalized_prompt": prompt,
+            "coder_output": None,
+            "reviewer_output": None,
+            "final_output": vision_output,
+            "escalated": False,
+            "escalation_reason": "",
+            "judge": None,
+        }
+    )
+
+    return VisionResponse(output=vision_output)
+
+
+# =========================
+# /dashboard endpoint
+# =========================
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(limit: int = 50):
+    """
+    Dashboard UI for traces (code, study, chat, vision).
+    """
+    return render_dashboard(limit=limit)

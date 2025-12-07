@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Local Chat Workspace</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #020617;
+      --bg-elevated: #020617;
+      --border-subtle: #1f2937;
+      --border-strong: #111827;
+      --accent: #22c55e;
+      --accent-soft: rgba(34,197,94,0.16);
+      --accent2: #0ea5e9;
+      --accent2-soft: rgba(14,165,233,0.16);
+      --text-muted: #9ca3af;
+      --text-soft: #6b7280;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top left, #020617 0, #020617 40%, #020617 100%);
+      color: #e5e7eb;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .avatar {
+      width: 26px;
+      height: 26px;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      background: radial-gradient(circle at 30% 0%, #22c55e, #0f172a);
+    }
+    .title {
+      font-size: 14px;
+      font-weight: 500;
+    }
+    .subtitle {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: radial-gradient(circle at top, rgba(15,23,42,0.85), #020617 60%, #020617 100%);
+    }
+
+    .chat-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      max-width: 900px;
+      margin: 0 auto;
+      width: 100%;
+      border-left: 1px solid var(--border-subtle);
+      border-right: 1px solid var(--border-subtle);
+      background: rgba(2,6,23,0.98);
+    }
+
+    .chat-header {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 11px;
+    }
+    .chat-header-left {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .chat-header-main {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+    }
+    .chat-header-main .label {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+    .chat-header-sub {
+      color: var(--text-soft);
+      font-size: 11px;
+    }
+
+    .chat-header-right {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px 10px 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: radial-gradient(circle at top, rgba(15,23,42,0.6), #020617 65%);
+    }
+    .msg-row {
+      display: flex;
+      width: 100%;
+    }
+    .msg-row.user {
+      justify-content: flex-end;
+    }
+    .msg-row.assistant {
+      justify-content: flex-start;
+    }
+    .msg-bubble {
+      max-width: 78%;
+      padding: 7px 10px 5px;
+      border-radius: 12px;
+      font-size: 13px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      box-shadow: 0 1px 0 rgba(0,0,0,0.45);
+      position: relative;
+    }
+    .msg-bubble.user {
+      background: var(--accent-soft);
+      border: 1px solid rgba(34,197,94,0.5);
+      border-bottom-right-radius: 2px;
+    }
+    .msg-bubble.assistant {
+      background: var(--accent2-soft);
+      border: 1px solid rgba(56,189,248,0.6);
+      border-bottom-left-radius: 2px;
+    }
+    .msg-text {
+      font-size: 13px;
+    }
+    .msg-ts {
+      font-size: 9px;
+      color: var(--text-soft);
+      margin-top: 2px;
+      text-align: right;
+    }
+
+    .chat-input {
+      border-top: 1px solid var(--border-subtle);
+      padding: 6px 8px;
+      display: flex;
+      align-items: flex-end;
+      gap: 6px;
+      background: radial-gradient(circle at top, rgba(15,23,42,0.9), #020617);
+    }
+    #prompt {
+      flex: 1;
+      resize: none;
+      min-height: 32px;
+      max-height: 80px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border-subtle);
+      background: #020617;
+      color: #e5e7eb;
+      font-size: 13px;
+      line-height: 1.4;
+      outline: none;
+    }
+    #prompt:focus {
+      border-color: rgba(59,130,246,0.8);
+      box-shadow: 0 0 0 1px rgba(59,130,246,0.5);
+    }
+    #send-btn {
+      border: none;
+      border-radius: 999px;
+      padding: 0 18px;
+      height: 34px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      background: linear-gradient(135deg, #22c55e, #16a34a);
+      color: #020617;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 70px;
+      transition: transform 0.08s ease, box-shadow 0.08s ease, filter 0.08s ease;
+    }
+    #send-btn:disabled {
+      opacity: 0.5;
+      cursor: default;
+      transform: none;
+      box-shadow: none;
+      filter: grayscale(0.3);
+    }
+    #send-btn:not(:disabled):hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 10px rgba(0,0,0,0.7);
+    }
+
+    @media (max-width: 720px) {
+      header {
+        padding: 6px 8px;
+      }
+      .chat-container {
+        max-width: 100%;
+        border-left: none;
+        border-right: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="avatar">AI</div>
+      <div>
+        <div class="title">Local Chat Workspace</div>
+        <div class="subtitle">PC brain · LAN-only · Ollama</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <span id="status-text">Ready</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="chat-container">
+      <div class="chat-header">
+        <div class="chat-header-left">
+          <div class="chat-header-main">
+            <span class="label">Session</span>
+            <span id="session-label">Not started</span>
+          </div>
+          <div class="chat-header-sub" id="model-label">
+            Model: (server default)
+          </div>
+        </div>
+        <div class="chat-header-right">
+          Messages stay on this machine only.
+        </div>
+      </div>
+
+      <div class="messages" id="messages"></div>
+
+      <div class="chat-input">
+        <textarea id="prompt" placeholder="Type a message and press Enter..."></textarea>
+        <button id="send-btn">Send</button>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      const messagesEl = document.getElementById("messages");
+      const promptEl = document.getElementById("prompt");
+      const sendBtn = document.getElementById("send-btn");
+      const statusTextEl = document.getElementById("status-text");
+      const sessionLabelEl = document.getElementById("session-label");
+      const modelLabelEl = document.getElementById("model-label");
+
+      const state = {
+        profileId: null,
+        chatId: null,
+        loading: false,
+      };
+
+      function setStatus(text) {
+        statusTextEl.textContent = text;
+      }
+
+      function formatNowTs() {
+        const d = new Date();
+        return d.toLocaleString("en-IN", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: true,
+        });
+      }
+
+      function addMessage(role, text, tsOverride) {
+        const row = document.createElement("div");
+        row.className = "msg-row " + (role === "assistant" ? "assistant" : "user");
+
+        const bubble = document.createElement("div");
+        bubble.className = "msg-bubble " + (role === "assistant" ? "assistant" : "user");
+
+        const textDiv = document.createElement("div");
+        textDiv.className = "msg-text";
+        textDiv.textContent = text;
+        bubble.appendChild(textDiv);
+
+        const ts = document.createElement("div");
+        ts.className = "msg-ts";
+        ts.textContent = tsOverride || formatNowTs();
+        bubble.appendChild(ts);
+
+        row.appendChild(bubble);
+        messagesEl.appendChild(row);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      async function sendMessage() {
+        const text = (promptEl.value || "").trim();
+        if (!text) return;
+        if (state.loading) return;
+
+        state.loading = true;
+        sendBtn.disabled = true;
+
+        addMessage("user", text);
+        const tsNow = formatNowTs();
+        promptEl.value = "";
+        setStatus("Sending...");
+
+        const payload = {
+          text: text,
+          profile_id: state.profileId,
+          chat_id: state.chatId,
+        };
+
+        try {
+          const resp = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (!resp.ok) {
+            const errText = await resp.text();
+            addMessage("assistant", "(Error: " + resp.status + ") " + errText, tsNow);
+            setStatus("Error");
+            return;
+          }
+
+          const data = await resp.json();
+          state.profileId = data.profile_id || state.profileId;
+          state.chatId = data.chat_id || state.chatId;
+
+          if (state.profileId && state.chatId) {
+            sessionLabelEl.textContent = "Profile " + state.profileId + " · Chat " + state.chatId;
+          }
+
+          const replyText = data.reply || "(Empty reply)";
+          addMessage("assistant", replyText);
+
+          // We don't know the exact model here; we just show default name from config via server-side logic if needed later.
+          modelLabelEl.textContent = "Model: active chat model (server-side)";
+          setStatus("Ready");
+        } catch (err) {
+          addMessage("assistant", "(Network error while calling /api/chat)", tsNow);
+          setStatus("Network error");
+        } finally {
+          state.loading = false;
+          sendBtn.disabled = false;
+          promptEl.focus();
+        }
+      }
+
+      sendBtn.addEventListener("click", function (e) {
+        e.preventDefault();
+        sendMessage();
+      });
+
+      promptEl.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendMessage();
+        }
+      });
+
+      // init
+      setStatus("Ready");
+      promptEl.focus();
+    })();
+  </script>
+</body>
+</html>

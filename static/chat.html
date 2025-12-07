@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Local Chat Workspace</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #020617;
+      color: #e5e7eb;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 10px 14px;
+      border-bottom: 1px solid #111827;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+    }
+    header .title {
+      font-weight: 600;
+    }
+    header .meta {
+      font-size: 11px;
+      color: #9ca3af;
+    }
+    header .status {
+      font-size: 11px;
+      color: #9ca3af;
+    }
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      overflow: hidden;
+    }
+    .sidebar {
+      border-right: 1px solid #111827;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: #020617;
+    }
+    .section-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: #9ca3af;
+    }
+    .list {
+      border-radius: 8px;
+      border: 1px solid #111827;
+      background: #020617;
+      flex: 1;
+      overflow-y: auto;
+      padding: 4px;
+      font-size: 13px;
+    }
+    .item {
+      padding: 6px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2px;
+    }
+    .item:hover {
+      background: #111827;
+    }
+    .item.active {
+      background: #2563eb;
+    }
+    .item small {
+      font-size: 11px;
+      color: #9ca3af;
+    }
+    .sidebar-buttons {
+      display: flex;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .btn {
+      border-radius: 6px;
+      border: 1px solid #1f2937;
+      background: #020617;
+      color: #e5e7eb;
+      padding: 4px 8px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .btn:hover {
+      background: #111827;
+    }
+    .chat-pane {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+    .chat-header {
+      padding: 8px 12px;
+      border-bottom: 1px solid #111827;
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .chat-header-names {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .chat-header-main {
+      font-weight: 500;
+    }
+    .chat-header-sub {
+      font-size: 11px;
+      color: #9ca3af;
+    }
+    .chat-header-right {
+      font-size: 11px;
+      color: #9ca3af;
+    }
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      background: #020617;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .msg-row {
+      display: flex;
+    }
+    .msg-row.user {
+      justify-content: flex-end;
+    }
+    .msg-row.assistant {
+      justify-content: flex-start;
+    }
+    .msg-bubble {
+      max-width: 72%;
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 13px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .msg-bubble.user {
+      background: #1e40af;
+    }
+    .msg-bubble.assistant {
+      background: #111827;
+    }
+    .msg-ts {
+      margin-top: 4px;
+      font-size: 10px;
+      color: #9ca3af;
+      text-align: right;
+    }
+    .chat-thumb {
+      max-width: 200px;
+      display: block;
+      border-radius: 8px;
+      margin-bottom: 4px;
+    }
+    .input-bar {
+      border-top: 1px solid #111827;
+      padding: 8px;
+      display: flex;
+      gap: 6px;
+      align-items: flex-end;
+      background: #020617;
+    }
+    .input-bar textarea {
+      flex: 1;
+      resize: vertical;
+      min-height: 34px;
+      max-height: 96px;
+      border-radius: 8px;
+      border: 1px solid #1f2937;
+      background: #020617;
+      color: #e5e7eb;
+      font-size: 13px;
+      padding: 6px 8px;
+      outline: none;
+    }
+    .input-bar textarea:focus {
+      border-color: #2563eb;
+    }
+    .input-buttons {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .btn-primary {
+      background: #2563eb;
+      border: none;
+      color: #e5e7eb;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .btn-primary:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+    .btn-secondary {
+      background: #111827;
+      border: 1px solid #1f2937;
+      color: #e5e7eb;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .btn-secondary:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+    .attach-btn {
+      border-radius: 6px;
+      border: 1px solid #1f2937;
+      background: #020617;
+      color: #e5e7eb;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 15px;
+    }
+    .attach-btn:hover {
+      background: #111827;
+    }
+    @media (max-width: 840px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+      .sidebar {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <div class="title">Local Chat Workspace</div>
+      <div class="meta">Profiles · Multi-chats · Smart mode · Vision in chat</div>
+    </div>
+    <div class="status" id="status-text">Ready</div>
+  </header>
+  <main>
+    <div class="sidebar">
+      <div class="section-label">Profiles</div>
+      <div class="list" id="profiles-list"></div>
+      <div class="sidebar-buttons">
+        <button class="btn" id="btn-add-profile">+ Profile</button>
+      </div>
+
+      <div class="section-label" style="margin-top:10px;">Chats</div>
+      <div class="list" id="chats-list"></div>
+      <div class="sidebar-buttons">
+        <button class="btn" id="btn-add-chat">+ Chat</button>
+      </div>
+    </div>
+
+    <div class="chat-pane">
+      <div class="chat-header">
+        <div class="chat-header-names">
+          <div class="chat-header-main" id="chat-title">No profile selected</div>
+          <div class="chat-header-sub" id="chat-subtitle">Model: -</div>
+        </div>
+        <div class="chat-header-right" id="chat-model-info">
+          default: -, smart: -
+        </div>
+      </div>
+      <div class="messages" id="messages"></div>
+      <div class="input-bar">
+        <button class="attach-btn" id="attach-btn" title="Attach image">📎</button>
+        <input type="file" id="image-input" accept="image/*" style="display:none;" />
+        <textarea id="prompt" placeholder="Type a message, or attach an image..."></textarea>
+        <div class="input-buttons">
+          <button class="btn-primary" id="send-btn">Send</button>
+          <button class="btn-secondary" id="smart-btn">Smart</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById("status-text");
+    const profilesListEl = document.getElementById("profiles-list");
+    const chatsListEl = document.getElementById("chats-list");
+    const messagesEl = document.getElementById("messages");
+    const promptEl = document.getElementById("prompt");
+    const sendBtn = document.getElementById("send-btn");
+    const smartBtn = document.getElementById("smart-btn");
+    const attachBtn = document.getElementById("attach-btn");
+    const imageInput = document.getElementById("image-input");
+
+    const btnAddProfile = document.getElementById("btn-add-profile");
+    const btnAddChat = document.getElementById("btn-add-chat");
+
+    const chatTitleEl = document.getElementById("chat-title");
+    const chatSubtitleEl = document.getElementById("chat-subtitle");
+    const chatModelInfoEl = document.getElementById("chat-model-info");
+
+    let state = {
+      profiles: [],
+      chats: [],
+      activeProfileId: null,
+      activeChatId: null,
+      defaultModel: "-",
+      smartModel: "-",
+      loading: false,
+      pendingFile: null
+    };
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    async function fetchJSON(url, options = {}) {
+      const resp = await fetch(url, {
+        headers: { "Content-Type": "application/json" },
+        ...options
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error("HTTP " + resp.status + ": " + text);
+      }
+      if (resp.status === 204) return null;
+      return resp.json();
+    }
+
+    function saveActiveIds() {
+      if (state.activeProfileId) {
+        localStorage.setItem("chat.activeProfileId", state.activeProfileId);
+      }
+      if (state.activeProfileId && state.activeChatId) {
+        localStorage.setItem("chat.activeChatId." + state.activeProfileId, state.activeChatId);
+      }
+    }
+
+    function restoreActiveIds() {
+      const p = localStorage.getItem("chat.activeProfileId");
+      if (p) state.activeProfileId = p;
+      if (state.activeProfileId) {
+        const c = localStorage.getItem("chat.activeChatId." + state.activeProfileId);
+        if (c) state.activeChatId = c;
+      }
+    }
+
+    function renderProfiles() {
+      profilesListEl.innerHTML = "";
+      state.profiles.forEach((p) => {
+        const div = document.createElement("div");
+        div.className = "item" + (p.id === state.activeProfileId ? " active" : "");
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = p.display_name || p.id;
+        const small = document.createElement("small");
+        small.textContent = p.id;
+        div.appendChild(nameSpan);
+        div.appendChild(small);
+        div.addEventListener("click", () => {
+          if (state.activeProfileId !== p.id) {
+            state.activeProfileId = p.id;
+            state.activeChatId = null;
+            saveActiveIds();
+            refreshChatsAndMessages();
+          }
+        });
+        profilesListEl.appendChild(div);
+      });
+    }
+
+    function renderChats() {
+      chatsListEl.innerHTML = "";
+      state.chats.forEach((c) => {
+        const div = document.createElement("div");
+        div.className = "item" + (c.id === state.activeChatId ? " active" : "");
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = c.display_name || c.id;
+        const small = document.createElement("small");
+        small.textContent = (c.message_count || 0) + " msg";
+        div.appendChild(nameSpan);
+        div.appendChild(small);
+        div.addEventListener("click", () => {
+          if (state.activeChatId !== c.id) {
+            state.activeChatId = c.id;
+            saveActiveIds();
+            loadMessages();
+          }
+        });
+        chatsListEl.appendChild(div);
+      });
+    }
+
+    function renderMessages(messages) {
+      messagesEl.innerHTML = "";
+      (messages || []).forEach((m) => {
+        const role = (m.role || "user").toLowerCase();
+        const row = document.createElement("div");
+        row.className = "msg-row " + (role === "assistant" ? "assistant" : "user");
+
+        const bubble = document.createElement("div");
+        bubble.className = "msg-bubble " + (role === "assistant" ? "assistant" : "user");
+
+        const rawText = m.text || "";
+        let mainText = rawText;
+
+        if (rawText.startsWith("__IMG__")) {
+          const idx = rawText.indexOf("\n");
+          const header = idx === -1 ? rawText : rawText.slice(0, idx);
+          const body = idx === -1 ? "" : rawText.slice(idx + 1);
+
+          const meta = header.substring("__IMG__".length);
+          const parts = meta.split("|", 2);
+          if (parts.length === 2) {
+            const mime = parts[0] || "image/png";
+            const b64 = parts[1] || "";
+            const img = document.createElement("img");
+            img.className = "chat-thumb";
+            img.src = "data:" + mime + ";base64," + b64;
+            bubble.appendChild(img);
+          }
+          if (body) {
+            const captionDiv = document.createElement("div");
+            captionDiv.textContent = body;
+            bubble.appendChild(captionDiv);
+          }
+          mainText = "";
+        }
+
+        if (mainText && !rawText.startsWith("__IMG__")) {
+          const textDiv = document.createElement("div");
+          textDiv.textContent = mainText;
+          bubble.appendChild(textDiv);
+        }
+
+        const ts = document.createElement("div");
+        ts.className = "msg-ts";
+        ts.textContent = m.ts || "";
+        bubble.appendChild(ts);
+
+        row.appendChild(bubble);
+        messagesEl.appendChild(row);
+      });
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function updateHeader() {
+      const prof = state.profiles.find((p) => p.id === state.activeProfileId);
+      const chat = state.chats.find((c) => c.id === state.activeChatId);
+      const profileName = prof ? (prof.display_name || prof.id) : "-";
+      const chatName = chat ? (chat.display_name || chat.id) : "-";
+
+      chatTitleEl.textContent = "Profile: " + profileName + " · Chat: " + chatName;
+
+      let label = "";
+      if (chat && chat.model_override) {
+        label = chat.model_override + " (chat override)";
+      } else if (prof && prof.model_override) {
+        label = prof.model_override + " (profile default)";
+      } else if (state.defaultModel) {
+        label = state.defaultModel + " (global default)";
+      } else {
+        label = "default";
+      }
+      chatSubtitleEl.textContent = "Model: " + label;
+
+      chatModelInfoEl.textContent =
+        "default: " + (state.defaultModel || "-") +
+        " · smart: " + (state.smartModel || "-");
+    }
+
+    async function loadModels() {
+      try {
+        const data = await fetchJSON("/api/chat/models");
+        state.defaultModel = data.default_model || "-";
+        state.smartModel = data.smart_model || "-";
+        updateHeader();
+      } catch (err) {
+        console.error("Failed to load models", err);
+      }
+    }
+
+    async function loadProfiles() {
+      const data = await fetchJSON("/api/chat/profiles");
+      state.profiles = data.profiles || [];
+
+      if (!state.profiles.length) {
+        const created = await fetchJSON("/api/chat/profiles", {
+          method: "POST",
+          body: JSON.stringify({})
+        });
+        state.profiles = [created];
+      }
+
+      if (!state.activeProfileId || !state.profiles.find((p) => p.id === state.activeProfileId)) {
+        state.activeProfileId = state.profiles[0].id;
+      }
+
+      renderProfiles();
+      saveActiveIds();
+    }
+
+    async function loadChats() {
+      if (!state.activeProfileId) return;
+      const data = await fetchJSON("/api/chat/chats?profile_id=" + encodeURIComponent(state.activeProfileId));
+      state.chats = data.chats || [];
+
+      if (!state.chats.length) {
+        const created = await fetchJSON("/api/chat/chats", {
+          method: "POST",
+          body: JSON.stringify({ profile_id: state.activeProfileId })
+        });
+        state.chats = [created];
+      }
+
+      if (!state.activeChatId || !state.chats.find((c) => c.id === state.activeChatId)) {
+        state.activeChatId = state.chats[0].id;
+      }
+
+      renderChats();
+      saveActiveIds();
+    }
+
+    async function loadMessages() {
+      if (!state.activeProfileId || !state.activeChatId) return;
+      setStatus("Loading messages...");
+      try {
+        const data = await fetchJSON(
+          "/api/chat/messages?profile_id=" + encodeURIComponent(state.activeProfileId) +
+          "&chat_id=" + encodeURIComponent(state.activeChatId)
+        );
+        state.activeChatId = data.chat_id || state.activeChatId;
+        renderMessages(data.messages || []);
+        updateHeader();
+        setStatus("Ready");
+      } catch (err) {
+        console.error(err);
+        setStatus("Failed to load messages");
+      }
+    }
+
+    async function refreshChatsAndMessages() {
+      await loadChats();
+      await loadMessages();
+    }
+
+    async function refreshAll() {
+      try {
+        restoreActiveIds();
+        await loadModels();
+        await loadProfiles();
+        await refreshChatsAndMessages();
+      } catch (err) {
+        console.error(err);
+        setStatus("Error refreshing");
+      }
+    }
+
+    async function createProfile() {
+      const name = prompt("Profile name (optional):", "");
+      try {
+        const created = await fetchJSON("/api/chat/profiles", {
+          method: "POST",
+          body: JSON.stringify({ display_name: name || null })
+        });
+        state.activeProfileId = created.id;
+        state.activeChatId = null;
+        await refreshAll();
+      } catch (err) {
+        console.error(err);
+        alert("Failed to create profile");
+      }
+    }
+
+    async function createChat() {
+      if (!state.activeProfileId) return;
+      const name = prompt("Chat name (optional):", "");
+      try {
+        const created = await fetchJSON("/api/chat/chats", {
+          method: "POST",
+          body: JSON.stringify({
+            profile_id: state.activeProfileId,
+            display_name: name || null
+          })
+        });
+        state.activeChatId = created.id;
+        await refreshAll();
+      } catch (err) {
+        console.error(err);
+        alert("Failed to create chat");
+      }
+    }
+
+    async function sendMessage(smart) {
+      if (!state.activeProfileId || !state.activeChatId) return;
+      const text = promptEl.value.trim();
+      const hasText = !!text;
+      const hasImage = !!state.pendingFile;
+
+      if (!hasText && !hasImage) return;
+      if (state.loading) return;
+
+      state.loading = true;
+      sendBtn.disabled = true;
+      smartBtn.disabled = true;
+
+      const tsNow = new Date().toLocaleString("en-IN", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true
+      });
+
+      const row = document.createElement("div");
+      row.className = "msg-row user";
+      const bubble = document.createElement("div");
+      bubble.className = "msg-bubble user";
+      const contentDiv = document.createElement("div");
+      contentDiv.textContent = hasImage ? (text || "[Image]") : text;
+      bubble.appendChild(contentDiv);
+      const ts = document.createElement("div");
+      ts.className = "msg-ts";
+      ts.textContent = tsNow;
+      bubble.appendChild(ts);
+      row.appendChild(bubble);
+      messagesEl.appendChild(row);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+
+      const prevText = text;
+      promptEl.value = "";
+
+      try {
+        if (hasImage) {
+          setStatus("Sending image to vision...");
+          const formData = new FormData();
+          formData.append("profile_id", state.activeProfileId);
+          formData.append("chat_id", state.activeChatId);
+          formData.append("prompt", prevText);
+          formData.append("mode", "auto");
+          formData.append("file", state.pendingFile);
+
+          const resp = await fetch("/api/chat/vision", {
+            method: "POST",
+            body: formData
+          });
+          if (!resp.ok) {
+            const errText = await resp.text();
+            throw new Error("Vision error: " + errText);
+          }
+          const data = await resp.json();
+          state.activeProfileId = data.profile_id;
+          state.activeChatId = data.chat_id;
+          state.pendingFile = null;
+          imageInput.value = "";
+        } else {
+          setStatus(smart ? "Sending (smart)..." : "Sending...");
+          const payload = {
+            prompt: prevText,
+            profile_id: state.activeProfileId,
+            chat_id: state.activeChatId,
+            smart: !!smart
+          };
+          const data = await fetchJSON("/api/chat", {
+            method: "POST",
+            body: JSON.stringify(payload)
+          });
+          state.activeProfileId = data.profile_id;
+          state.activeChatId = data.chat_id;
+        }
+
+        saveActiveIds();
+        await loadChats();
+        await loadMessages();
+        setStatus("Ready");
+      } catch (err) {
+        console.error(err);
+        setStatus("Error sending");
+        const rowErr = document.createElement("div");
+        rowErr.className = "msg-row assistant";
+        const bubbleErr = document.createElement("div");
+        bubbleErr.className = "msg-bubble assistant";
+        bubbleErr.textContent = "(Error: " + (err.message || "send failed") + ")";
+        const tsErr = document.createElement("div");
+        tsErr.className = "msg-ts";
+        tsErr.textContent = tsNow;
+        bubbleErr.appendChild(tsErr);
+        rowErr.appendChild(bubbleErr);
+        messagesEl.appendChild(rowErr);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      } finally {
+        state.loading = false;
+        sendBtn.disabled = false;
+        smartBtn.disabled = false;
+        promptEl.focus();
+      }
+    }
+
+    sendBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      sendMessage(false);
+    });
+
+    smartBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      sendMessage(true);
+    });
+
+    promptEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage(false);
+      }
+    });
+
+    attachBtn.addEventListener("click", () => {
+      imageInput.click();
+    });
+
+    imageInput.addEventListener("change", () => {
+      const file = imageInput.files && imageInput.files[0];
+      state.pendingFile = file || null;
+      if (state.pendingFile) {
+        setStatus("Image attached: " + state.pendingFile.name);
+      } else {
+        setStatus("Ready");
+      }
+    });
+
+    btnAddProfile.addEventListener("click", () => {
+      createProfile();
+    });
+
+    btnAddChat.addEventListener("click", () => {
+      createChat();
+    });
+
+    window.addEventListener("load", () => {
+      refreshAll();
+      promptEl.focus();
+    });
+  </script>
+</body>
+</html>

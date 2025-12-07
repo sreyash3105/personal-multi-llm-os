@@ -1,0 +1,28 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.env
+
+# Runtime storage
+data/
+history/
+
+# File uploads / cache (optional future modules)
+uploads/
+cache/
+
+# IDE settings
+.vscode/
+.idea/
+
+# OS junk
+Thumbs.db
+.DS_Store
+
+# Model folders to avoid massive accidental sync
+models/
