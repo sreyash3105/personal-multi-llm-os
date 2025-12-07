@@ -108,3 +108,9 @@ TOOLS_RUNTIME_LOGGING = True
 # Allow chat messages to directly trigger tools with the "///tool" command.
 # When False, chat behaves exactly as before and ignores tool tags.
 TOOLS_IN_CHAT_ENABLED = True
+
+# When enabled, the special "///tool+chat TOOL_NAME" command in chat will:
+#   1) Execute the tool
+#   2) Feed the tool result into the chat model
+#   3) Return a natural language summary instead of raw JSON.
+TOOLS_CHAT_HYBRID_ENABLED = True

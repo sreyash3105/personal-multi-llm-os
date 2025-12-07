@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel
 
-from config import CHAT_MODEL_NAME, AVAILABLE_MODELS, VISION_ENABLED, SMART_CHAT_MODEL_NAME, TOOLS_IN_CHAT_ENABLED
+from config import CHAT_MODEL_NAME, AVAILABLE_MODELS, VISION_ENABLED, SMART_CHAT_MODEL_NAME, TOOLS_IN_CHAT_ENABLED, TOOLS_CHAT_HYBRID_ENABLED
 from vision_pipeline import run_vision
 
 from pipeline import call_ollama
@@ -134,17 +134,22 @@ def _maybe_handle_tool_command(
     chat_id: str,
 ):
     """
-    If TOOLS_IN_CHAT_ENABLED is True and the prompt starts with a tool command,
-    execute the tool instead of calling the chat model.
+    Handle explicit tool commands in chat.
 
-    Syntax:
+    Supported syntaxes:
 
         ///tool TOOL_NAME
         {"arg1": "...", "arg2": 123}
 
-    - First line must start with "///tool".
-    - The rest (if any) is parsed as JSON dict for args.
-    - On any parse error, returns a helpful error message as a normal chat reply.
+        ///tool+chat TOOL_NAME
+        {"arg1": "..."}
+
+    - "///tool"      -> execute tool and return raw JSON/text result
+    - "///tool+chat" -> if TOOLS_CHAT_HYBRID_ENABLED is True, execute tool AND
+                        let the chat model summarize the result for the user.
+                        If the flag is False, falls back to raw JSON result.
+
+    If TOOLS_IN_CHAT_ENABLED is False, this function always returns None.
     """
     # Safety guard: if feature is disabled, do nothing
     if not TOOLS_IN_CHAT_ENABLED:
@@ -152,18 +157,31 @@ def _maybe_handle_tool_command(
 
     text = req.prompt or ""
     stripped = text.lstrip()
+
+    # Only handle commands starting with ///tool or ///tool+chat
     if not stripped.startswith("///tool"):
         return None
 
     try:
         lines = stripped.splitlines()
         first_line = lines[0].strip()
-        parts = first_line.split(maxsplit=1)
 
-        if len(parts) < 2 or not parts[1].strip():
+        # Detect hybrid vs raw mode
+        hybrid_requested = first_line.startswith("///tool+chat")
+        # Split to extract tool name part
+        if hybrid_requested:
+            prefix = "///tool+chat"
+        else:
+            prefix = "///tool"
+
+        remainder = first_line[len(prefix):].strip()
+        if not remainder:
             error_msg = (
                 "Tool command format:\n"
                 "  ///tool TOOL_NAME\n"
+                "  {\"optional\": \"json args\"}\n\n"
+                "Hybrid mode:\n"
+                "  ///tool+chat TOOL_NAME\n"
                 "  {\"optional\": \"json args\"}\n"
             )
             append_message(profile_id, chat_id, "user", req.prompt)
@@ -191,7 +209,7 @@ def _maybe_handle_tool_command(
                 "chat_id": chat_id,
             }
 
-        tool_name = parts[1].strip()
+        tool_name = remainder
         args: Dict[str, Any] = {}
 
         # Parse optional JSON args from remaining lines
@@ -214,24 +232,63 @@ def _maybe_handle_tool_command(
 
         record = execute_tool(tool_name, args, context)
 
+        # Build raw result text (JSON pretty print) as baseline
         if record.get("ok"):
             result = record.get("result")
             if result is None:
-                output_text = "(tool executed successfully, but returned no result)"
+                raw_result_text = "(tool executed successfully, but returned no result)"
             else:
                 try:
-                    output_text = json.dumps(result, ensure_ascii=False, indent=2)
+                    raw_result_text = json.dumps(result, ensure_ascii=False, indent=2)
                 except Exception:
-                    output_text = str(result)
+                    raw_result_text = str(result)
         else:
-            output_text = f"Tool '{tool_name}' failed: {record.get('error') or 'Unknown error'}"
+            raw_result_text = f"Tool '{tool_name}' failed: {record.get('error') or 'Unknown error'}"
 
+        output_text = raw_result_text
+        mode_label = "chat_tool_execution"
+
+        # If hybrid requested and flag is enabled and tool succeeded, call chat model
+        if (
+            hybrid_requested
+            and TOOLS_CHAT_HYBRID_ENABLED
+            and record.get("ok")
+        ):
+            try:
+                # Use the smart chat model for summarization
+                summary_prompt = f"""
+You are an assistant summarizing the result of a tool execution for the user.
+
+Tool name: {tool_name}
+
+Original user message:
+{req.prompt}
+
+Raw tool result (JSON or text):
+{raw_result_text}
+
+Explain the result in clear, concise natural language. If there are numeric values
+or statuses, interpret them briefly. Do NOT include the raw JSON in your answer.
+""".strip()
+
+                summary = call_ollama(summary_prompt, SMART_CHAT_MODEL_NAME)
+                summary = (summary or "").strip()
+                if summary:
+                    output_text = summary
+                    mode_label = "chat_tool_hybrid"
+            except Exception as e:
+                # Fall back to raw result if summarization fails
+                fallback_msg = f"(Hybrid summarization failed: {e!s}. Showing raw tool result instead.)\n\n{raw_result_text}"
+                output_text = fallback_msg
+                mode_label = "chat_tool_hybrid"
+
+        # Store chat messages
         append_message(profile_id, chat_id, "user", req.prompt)
         append_message(profile_id, chat_id, "assistant", output_text)
 
         history_logger.log(
             {
-                "mode": "chat_tool_execution",
+                "mode": mode_label,
                 "original_prompt": req.prompt,
                 "normalized_prompt": req.prompt,
                 "coder_output": None,
