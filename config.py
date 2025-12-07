@@ -96,3 +96,15 @@ VISION_MODEL_NAME = AVAILABLE_MODELS.get("llava_7b", "llava:7b")
 
 # Toggle to disable vision quickly if needed
 VISION_ENABLED = True
+
+
+# ---- Tools runtime settings ----
+# Global feature flag: when False, tools are never executed.
+TOOLS_RUNTIME_ENABLED = True
+
+# If True, tools runtime will emit trace records into history.
+TOOLS_RUNTIME_LOGGING = True
+
+# Allow chat messages to directly trigger tools with the "///tool" command.
+# When False, chat behaves exactly as before and ignores tool tags.
+TOOLS_IN_CHAT_ENABLED = True

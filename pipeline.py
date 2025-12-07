@@ -261,6 +261,24 @@ User request / topic:
 
     return call_ollama(study_prompt, STUDY_MODEL_NAME)
 
+# =========================
+# Tools runtime integration hooks (placeholder)
+# =========================
+
+def maybe_run_tool_call(model_response: str, context: dict | None = None) -> str:
+    """
+    Placeholder hook for future tools integration.
+
+    For now this function is a no-op and simply returns the original
+    model response unchanged. Future V3.x steps can:
+      - inspect model_response for tool call directives
+      - call into the tools_runtime module
+      - merge tool outputs back into a final response
+
+    Keeping this here avoids touching core endpoint logic until the
+    tools runtime is fully ready and tested.
+    """
+    return model_response
 
 # =========================
 # Mode parsing (tags from laptop) for /api/code

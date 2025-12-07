@@ -1,14 +1,17 @@
-import base64
+#chat ui 
+import base64 
+import json
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel
 
-from config import CHAT_MODEL_NAME, AVAILABLE_MODELS, VISION_ENABLED, SMART_CHAT_MODEL_NAME
+from config import CHAT_MODEL_NAME, AVAILABLE_MODELS, VISION_ENABLED, SMART_CHAT_MODEL_NAME, TOOLS_IN_CHAT_ENABLED
 from vision_pipeline import run_vision
 
 from pipeline import call_ollama
 from history import history_logger
+
 from chat_storage import (
     list_profiles,
     create_profile,
@@ -26,6 +29,7 @@ from chat_storage import (
     get_chat,
 )
 
+from tools_runtime import execute_tool
 router = APIRouter()
 
 
@@ -120,6 +124,163 @@ def _resolve_model(profile: Dict[str, Any], chat: Dict[str, Any]) -> str:
         return prof_model
 
     return CHAT_MODEL_NAME
+
+
+def _maybe_handle_tool_command(
+    req: "ChatRequest",
+    profile: Dict[str, Any],
+    profile_id: str,
+    chat_meta: Dict[str, Any],
+    chat_id: str,
+):
+    """
+    If TOOLS_IN_CHAT_ENABLED is True and the prompt starts with a tool command,
+    execute the tool instead of calling the chat model.
+
+    Syntax:
+
+        ///tool TOOL_NAME
+        {"arg1": "...", "arg2": 123}
+
+    - First line must start with "///tool".
+    - The rest (if any) is parsed as JSON dict for args.
+    - On any parse error, returns a helpful error message as a normal chat reply.
+    """
+    # Safety guard: if feature is disabled, do nothing
+    if not TOOLS_IN_CHAT_ENABLED:
+        return None
+
+    text = req.prompt or ""
+    stripped = text.lstrip()
+    if not stripped.startswith("///tool"):
+        return None
+
+    try:
+        lines = stripped.splitlines()
+        first_line = lines[0].strip()
+        parts = first_line.split(maxsplit=1)
+
+        if len(parts) < 2 or not parts[1].strip():
+            error_msg = (
+                "Tool command format:\n"
+                "  ///tool TOOL_NAME\n"
+                "  {\"optional\": \"json args\"}\n"
+            )
+            append_message(profile_id, chat_id, "user", req.prompt)
+            append_message(profile_id, chat_id, "assistant", error_msg)
+            history_logger.log(
+                {
+                    "mode": "chat_tool_error",
+                    "original_prompt": req.prompt,
+                    "normalized_prompt": req.prompt,
+                    "coder_output": None,
+                    "reviewer_output": None,
+                    "final_output": error_msg,
+                    "escalated": False,
+                    "escalation_reason": "",
+                    "judge": None,
+                    "chat_profile_id": profile_id,
+                    "chat_profile_name": profile.get("display_name"),
+                    "chat_id": chat_id,
+                    "chat_model_used": "tool_command",
+                }
+            )
+            return {
+                "output": error_msg,
+                "profile_id": profile_id,
+                "chat_id": chat_id,
+            }
+
+        tool_name = parts[1].strip()
+        args: Dict[str, Any] = {}
+
+        # Parse optional JSON args from remaining lines
+        if len(lines) > 1:
+            raw_args = "\n".join(lines[1:]).strip()
+            if raw_args:
+                parsed = json.loads(raw_args)
+                if isinstance(parsed, dict):
+                    args = parsed
+                else:
+                    raise ValueError("Tool args JSON must be an object/dict.")
+
+        context = {
+            "source": "chat_tool",
+            "profile_id": profile_id,
+            "chat_id": chat_id,
+            "profile_name": profile.get("display_name"),
+            "chat_display_name": chat_meta.get("display_name"),
+        }
+
+        record = execute_tool(tool_name, args, context)
+
+        if record.get("ok"):
+            result = record.get("result")
+            if result is None:
+                output_text = "(tool executed successfully, but returned no result)"
+            else:
+                try:
+                    output_text = json.dumps(result, ensure_ascii=False, indent=2)
+                except Exception:
+                    output_text = str(result)
+        else:
+            output_text = f"Tool '{tool_name}' failed: {record.get('error') or 'Unknown error'}"
+
+        append_message(profile_id, chat_id, "user", req.prompt)
+        append_message(profile_id, chat_id, "assistant", output_text)
+
+        history_logger.log(
+            {
+                "mode": "chat_tool_execution",
+                "original_prompt": req.prompt,
+                "normalized_prompt": req.prompt,
+                "coder_output": None,
+                "reviewer_output": None,
+                "final_output": output_text,
+                "escalated": False,
+                "escalation_reason": "",
+                "judge": None,
+                "chat_profile_id": profile_id,
+                "chat_profile_name": profile.get("display_name"),
+                "chat_id": chat_id,
+                "chat_model_used": "tool_command",
+                "tool_record": record,
+            }
+        )
+
+        return {
+            "output": output_text,
+            "profile_id": profile_id,
+            "chat_id": chat_id,
+        }
+
+    except Exception as e:
+        # Last-resort safety: never let this raise up to FastAPI
+        error_msg = f"Tool command handling failed: {e}"
+        append_message(profile_id, chat_id, "user", req.prompt)
+        append_message(profile_id, chat_id, "assistant", error_msg)
+        history_logger.log(
+            {
+                "mode": "chat_tool_error",
+                "original_prompt": req.prompt,
+                "normalized_prompt": req.prompt,
+                "coder_output": None,
+                "reviewer_output": None,
+                "final_output": error_msg,
+                "escalated": False,
+                "escalation_reason": "",
+                "judge": None,
+                "chat_profile_id": profile_id,
+                "chat_profile_name": profile.get("display_name"),
+                "chat_id": chat_id,
+                "chat_model_used": "tool_command",
+            }
+        )
+        return {
+            "output": error_msg,
+            "profile_id": profile_id,
+            "chat_id": chat_id,
+        }
 
 
 # =========================
@@ -333,6 +494,18 @@ def api_chat(req: ChatRequest):
 
     chat_meta = _ensure_chat(profile_id, req.chat_id)
     chat_id = chat_meta["id"]
+    
+    # 🔥 Inserted block — tool-command interception BEFORE LLM call
+    tool_response = _maybe_handle_tool_command(
+        req=req,
+        profile=profile,
+        profile_id=profile_id,
+        chat_meta=chat_meta,
+        chat_id=chat_id,
+    )
+    if tool_response is not None:
+        return tool_response
+
 
     messages = get_messages(profile_id, chat_id)
 
