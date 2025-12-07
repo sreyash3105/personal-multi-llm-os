@@ -4,6 +4,12 @@ Model names, URLs, and general constants live here.
 
 You can register ALL your local models in AVAILABLE_MODELS
 and then pick which ones are active for coder/reviewer/judge/study/chat/vision.
+
+HARDNING BASE:
+- Phase 2 introduces concurrency + timeout guardrails:
+  - MAX_CONCURRENT_HEAVY_REQUESTS
+  - OLLAMA_REQUEST_TIMEOUT_SECONDS
+  - TOOLS_MAX_RUNTIME_SECONDS
 """
 
 # Ollama HTTP endpoint
@@ -71,6 +77,8 @@ ESCALATION_CONFLICT_THRESHOLD = 6
 
 
 # ---- Request / pipeline settings ----
+# Legacy global timeout for long-running requests (in seconds).
+# Specific per-model / per-tool timeouts are defined below in HARDNING BASE guardrails.
 REQUEST_TIMEOUT = 600
 DEFAULT_MODE = "code_reviewed"
 
@@ -114,3 +122,19 @@ TOOLS_IN_CHAT_ENABLED = True
 #   2) Feed the tool result into the chat model
 #   3) Return a natural language summary instead of raw JSON.
 TOOLS_CHAT_HYBRID_ENABLED = True
+
+
+# ---- HARDNING BASE · Phase 2 — Concurrency & timeouts ----
+# These guardrails are used by pipeline.py, vision_pipeline.py, tools_runtime.py, etc.
+
+# Maximum number of heavy operations that can run at the same time.
+# "Heavy" includes: /api/code pipeline, /api/vision, and any other explicitly-marked heavy tasks.
+MAX_CONCURRENT_HEAVY_REQUESTS = 2
+
+# Timeout for individual Ollama model calls (in seconds).
+# Applied around coder/reviewer/judge/study/chat/vision model invocations.
+OLLAMA_REQUEST_TIMEOUT_SECONDS = 120
+
+# Maximum allowed runtime for a single tool execution (in seconds).
+# Tools that exceed this should return a controlled "tool_timeout" error instead of hanging.
+TOOLS_MAX_RUNTIME_SECONDS = 60

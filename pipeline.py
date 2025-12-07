@@ -7,23 +7,62 @@ Core AI logic for the pipeline:
 - study stage (teaching / explanation / quizzes)
 - mode parsing (///raw, ///review-only, ///ctx, ///continue)
 - building context from history when requested
+
+HARDNING BASE · Phase 2:
+- Adds simple concurrency guard for heavy stages (coder/reviewer/judge).
+- Adds per-call timeout using OLLAMA_REQUEST_TIMEOUT_SECONDS.
+- Logs timing + status for each stage via history_logger.
 """
 
 import json
+import time
+import threading
 import requests
 
 from config import (
     OLLAMA_URL,
     CODER_MODEL_NAME,
     REVIEWER_MODEL_NAME,
-    REQUEST_TIMEOUT,
+    REQUEST_TIMEOUT,  # kept for compatibility; not used directly
     DEFAULT_MODE,
     JUDGE_MODEL_NAME,
     JUDGE_ENABLED,
     STUDY_MODEL_NAME,
+    OLLAMA_REQUEST_TIMEOUT_SECONDS,
+    MAX_CONCURRENT_HEAVY_REQUESTS,
 )
 from prompts import REVIEWER_SYSTEM_PROMPT, JUDGE_SYSTEM_PROMPT, STUDY_SYSTEM_PROMPT
-from history import load_recent_records
+from history import load_recent_records, history_logger
+
+
+# =========================
+# Concurrency guard (heavy stages)
+# =========================
+
+# A simple in-process semaphore to limit concurrent heavy operations
+# like coder/reviewer/judge. Study/chat can stay outside this gate.
+_HEAVY_SEMAPHORE = threading.BoundedSemaphore(value=MAX_CONCURRENT_HEAVY_REQUESTS)
+
+
+def _log_timing(stage: str, model_name: str, duration_s: float, status: str, error: str | None = None) -> None:
+    """
+    Best-effort timing logger into history.
+    Failure here must never break the main flow.
+    """
+    try:
+        history_logger.log(
+            {
+                "kind": "pipeline_timing",
+                "stage": stage,
+                "model": model_name,
+                "duration_s": round(float(duration_s), 3),
+                "status": status,
+                "error": error,
+            }
+        )
+    except Exception:
+        # Timing/logging is best-effort only.
+        pass
 
 
 # =========================
@@ -31,8 +70,14 @@ from history import load_recent_records
 # =========================
 
 def call_ollama(prompt: str, model_name: str) -> str:
+    """
+    Basic Ollama call wrapper.
+
+    HARDNING BASE:
+    - Uses OLLAMA_REQUEST_TIMEOUT_SECONDS for HTTP timeout.
+    """
     payload = {"model": model_name, "prompt": prompt, "stream": False}
-    resp = requests.post(OLLAMA_URL, json=payload, timeout=REQUEST_TIMEOUT)
+    resp = requests.post(OLLAMA_URL, json=payload, timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS)
     resp.raise_for_status()
     return resp.json().get("response", "").strip()
 
@@ -81,6 +126,10 @@ def run_coder(user_prompt: str) -> str:
 
     We enforce:
     - code-only output (as much as the model respects)
+
+    HARDNING BASE:
+    - Protected by heavy-semaphore (concurrency guard).
+    - Timing + status logged to history.
     """
     coder_prompt = f"""
 You are a code generation model.
@@ -96,7 +145,22 @@ User request:
 {user_prompt}
 """.strip()
 
-    return call_ollama(coder_prompt, CODER_MODEL_NAME)
+    start = time.monotonic()
+    status = "ok"
+    error_msg: str | None = None
+
+    _HEAVY_SEMAPHORE.acquire()
+    try:
+        result = call_ollama(coder_prompt, CODER_MODEL_NAME)
+        return result
+    except Exception as e:
+        status = "error"
+        error_msg = str(e)
+        raise
+    finally:
+        duration = time.monotonic() - start
+        _log_timing("coder", CODER_MODEL_NAME, duration, status, error_msg)
+        _HEAVY_SEMAPHORE.release()
 
 
 # =========================
@@ -107,6 +171,10 @@ def run_reviewer(original_prompt: str, draft_code: str) -> str:
     """
     Second stage: review and improve the draft code.
     Uses REVIEWER_MODEL_NAME.
+
+    HARDNING BASE:
+    - Protected by heavy-semaphore (concurrency guard).
+    - Timing + status logged to history.
     """
     if not draft_code.strip():
         return draft_code
@@ -121,8 +189,23 @@ Draft code:
 
 Return ONLY the final improved code (no markdown fences, no explanations):
 """
-    reviewed = call_ollama(reviewer_prompt, REVIEWER_MODEL_NAME).strip()
-    return reviewed or draft_code
+
+    start = time.monotonic()
+    status = "ok"
+    error_msg: str | None = None
+
+    _HEAVY_SEMAPHORE.acquire()
+    try:
+        reviewed = call_ollama(reviewer_prompt, REVIEWER_MODEL_NAME).strip()
+        return reviewed or draft_code
+    except Exception as e:
+        status = "error"
+        error_msg = str(e)
+        raise
+    finally:
+        duration = time.monotonic() - start
+        _log_timing("reviewer", REVIEWER_MODEL_NAME, duration, status, error_msg)
+        _HEAVY_SEMAPHORE.release()
 
 
 # =========================
@@ -146,6 +229,10 @@ def run_judge(original_prompt: str, coder_output: str, reviewer_output: str) -> 
     - If JUDGE_ENABLED is False, it returns a neutral stub.
     - If the model returns invalid JSON, it captures parse_error
       but does not raise, so the main pipeline never breaks.
+
+    HARDNING BASE:
+    - Protected by heavy-semaphore.
+    - Timing + status logged to history.
     """
     if not JUDGE_ENABLED:
         return {
@@ -176,6 +263,11 @@ REVIEWER_OUTPUT:
     conflict_score = None
     summary = ""
 
+    start = time.monotonic()
+    status = "ok"
+    error_msg: str | None = None
+
+    _HEAVY_SEMAPHORE.acquire()
     try:
         raw_response = call_ollama(judge_input, JUDGE_MODEL_NAME).strip()
         candidate = raw_response
@@ -194,7 +286,13 @@ REVIEWER_OUTPUT:
         summary = str(data.get("judgement_summary") or "").strip()
 
     except Exception as e:
+        status = "error"
+        error_msg = str(e)
         parse_error = str(e)
+    finally:
+        duration = time.monotonic() - start
+        _log_timing("judge", JUDGE_MODEL_NAME, duration, status, error_msg)
+        _HEAVY_SEMAPHORE.release()
 
     return {
         "confidence_score": confidence_score,
@@ -245,6 +343,10 @@ def run_study(user_prompt: str, style: str = "normal") -> str:
     """
     Study / teaching stage: explanations, quizzes, etc.
     Uses STUDY_MODEL_NAME and STUDY_SYSTEM_PROMPT.
+
+    HARDNING BASE:
+    - Considered "light" compared to heavy code pipeline.
+    - Still timed and logged, but not gated by the heavy semaphore.
     """
     style = (style or "normal").lower()
     if style not in ("normal", "short", "deep", "quiz"):
@@ -259,7 +361,21 @@ User request / topic:
 {user_prompt}
 """.strip()
 
-    return call_ollama(study_prompt, STUDY_MODEL_NAME)
+    start = time.monotonic()
+    status = "ok"
+    error_msg: str | None = None
+
+    try:
+        result = call_ollama(study_prompt, STUDY_MODEL_NAME)
+        return result
+    except Exception as e:
+        status = "error"
+        error_msg = str(e)
+        raise
+    finally:
+        duration = time.monotonic() - start
+        _log_timing("study", STUDY_MODEL_NAME, duration, status, error_msg)
+
 
 # =========================
 # Tools runtime integration hooks (placeholder)
@@ -279,6 +395,7 @@ def maybe_run_tool_call(model_response: str, context: dict | None = None) -> str
     tools runtime is fully ready and tested.
     """
     return model_response
+
 
 # =========================
 # Mode parsing (tags from laptop) for /api/code

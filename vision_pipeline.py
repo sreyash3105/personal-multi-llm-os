@@ -5,14 +5,59 @@ Vision pipeline for the local AI assistant.
 - Single entrypoint: run_vision(image_bytes, user_prompt, mode)
 
 Separated from main code pipeline so code/study/chat don't depend on it.
+
+HARDNING BASE · Phase 2:
+- Uses OLLAMA_REQUEST_TIMEOUT_SECONDS for Ollama calls.
+- Limits concurrent vision calls with a simple semaphore.
+- Logs timing + status for each vision run via history_logger.
 """
 
 import base64
+import threading
+import time
 from typing import Optional
 
 import requests
 
-from config import OLLAMA_URL, VISION_MODEL_NAME, VISION_ENABLED, REQUEST_TIMEOUT
+from config import (
+    OLLAMA_URL,
+    VISION_MODEL_NAME,
+    VISION_ENABLED,
+    OLLAMA_REQUEST_TIMEOUT_SECONDS,
+    MAX_CONCURRENT_HEAVY_REQUESTS,
+)
+from history import history_logger
+
+
+# =========================
+# Concurrency guard
+# =========================
+
+# Vision is considered a "heavy" operation similar to /api/code.
+# We use the same maximum as other heavy tasks, but this semaphore
+# is local to vision. (Global concurrency is still bounded by CPU/GPU.)
+_VISION_SEMAPHORE = threading.BoundedSemaphore(value=MAX_CONCURRENT_HEAVY_REQUESTS)
+
+
+def _log_timing(stage: str, model_name: str, duration_s: float, status: str, error: str | None = None) -> None:
+    """
+    Best-effort timing logger into history.
+    Failure here must never break the main flow.
+    """
+    try:
+        history_logger.log(
+            {
+                "kind": "pipeline_timing",
+                "stage": stage,
+                "model": model_name,
+                "duration_s": round(float(duration_s), 3),
+                "status": status,
+                "error": error,
+            }
+        )
+    except Exception:
+        # Logging is best-effort only.
+        pass
 
 
 def call_ollama_vision(
@@ -25,6 +70,9 @@ def call_ollama_vision(
 
     Uses the /api/generate endpoint with an 'images' field
     containing base64-encoded image data.
+
+    HARDNING BASE:
+    - Uses OLLAMA_REQUEST_TIMEOUT_SECONDS for HTTP timeout.
     """
     if not VISION_ENABLED:
         return "Vision is disabled in config (VISION_ENABLED = False)."
@@ -38,13 +86,13 @@ def call_ollama_vision(
     img_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     payload = {
-      "model": model_name,
-      "prompt": prompt,
-      "stream": False,
-      "images": [img_b64],
+        "model": model_name,
+        "prompt": prompt,
+        "stream": False,
+        "images": [img_b64],
     }
 
-    resp = requests.post(OLLAMA_URL, json=payload, timeout=REQUEST_TIMEOUT)
+    resp = requests.post(OLLAMA_URL, json=payload, timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS)
     resp.raise_for_status()
     return (resp.json().get("response") or "").strip()
 
@@ -65,6 +113,10 @@ def run_vision(
       model_name: optional override
 
     Output: plain text only (no markdown fences).
+
+    HARDNING BASE:
+    - Protected by a semaphore for concurrency control.
+    - Timing + status logged to history.
     """
     if not image_bytes:
         return "(No image uploaded.)"
@@ -117,4 +169,25 @@ User prompt:
 {uprompt}
 """.strip()
 
-    return call_ollama_vision(image_bytes=image_bytes, prompt=final_prompt, model_name=model_name)
+    # Timing + concurrency guard around the actual model call
+    start = time.monotonic()
+    status = "ok"
+    error_msg: str | None = None
+    effective_model = model_name or VISION_MODEL_NAME
+
+    _VISION_SEMAPHORE.acquire()
+    try:
+        result = call_ollama_vision(
+            image_bytes=image_bytes,
+            prompt=final_prompt,
+            model_name=model_name,
+        )
+        return result
+    except Exception as e:
+        status = "error"
+        error_msg = str(e)
+        raise
+    finally:
+        duration = time.monotonic() - start
+        _log_timing("vision", effective_model, duration, status, error_msg)
+        _VISION_SEMAPHORE.release()

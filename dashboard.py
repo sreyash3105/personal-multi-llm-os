@@ -160,18 +160,107 @@ parse_error:
     return "\n".join(rows_html)
 
 
+def _build_timing_rows_html(
+    records: List[Dict[str, Any]],
+    row_prefix: str,
+    empty_message: str,
+) -> str:
+    """
+    Build rows for system performance timings (pipeline_timing, tool_timing).
+    """
+    rows_html: List[str] = []
+
+    # newest first
+    records = list(reversed(records))
+
+    for idx, rec in enumerate(records):
+        rec_id = f"{row_prefix}-{idx}"
+        ts = escape(str(rec.get("ts", "")))
+        kind = str(rec.get("kind", "") or "")
+        status = str(rec.get("status", "") or "")
+        duration = rec.get("duration_s")
+        error = str(rec.get("error", "") or "")
+
+        if kind == "pipeline_timing":
+            stage = str(rec.get("stage", "") or "")
+            target = str(rec.get("model", "") or "")
+            type_label = stage or "pipeline"
+        elif kind == "tool_timing":
+            stage = "tool"
+            target = str(rec.get("tool", "") or "")
+            type_label = "tool"
+        else:
+            # Not a timing record we recognize; skip
+            continue
+
+        type_safe = escape(type_label)
+        target_safe = escape(target)
+        status_safe = escape(status or "-")
+        duration_label = "-" if duration is None else f"{float(duration):.3f}"
+        duration_safe = escape(duration_label)
+        error_preview = escape(_truncate(error.replace("\n", " "), 100))
+        error_full = escape(error)
+
+        row = f"""
+<tr onclick="toggleDetails('{rec_id}')" class="main-row">
+  <td>{ts}</td>
+  <td>{type_safe}</td>
+  <td>{target_safe}</td>
+  <td>{duration_safe}</td>
+  <td>{status_safe}</td>
+  <td>{error_preview}</td>
+</tr>
+<tr id="{rec_id}" class="details-row">
+  <td colspan="6">
+    <div class="details">
+      <div class="block">
+        <h3>Timing Record</h3>
+        <pre>kind: {escape(kind)}
+type: {type_safe}
+target: {target_safe}
+status: {status_safe}
+duration_s: {duration_safe}
+
+error:
+{error_full}</pre>
+      </div>
+    </div>
+  </td>
+</tr>
+"""
+        rows_html.append(row)
+
+    if not rows_html:
+        return f"""
+<tr>
+  <td colspan="6" style="text-align:center; padding: 24px; color: #9ca3af;">
+    {empty_message}
+  </td>
+</tr>
+"""
+
+    return "\n".join(rows_html)
+
+
 def render_dashboard(limit: int = 50) -> HTMLResponse:
     """
     Build and return the dashboard HTML as an HTMLResponse.
     Main board: code + study.
     Chat board: only mode == "chat".
+    Performance board: timing entries from pipeline/tools.
     """
     records = load_recent_records(limit=limit)
 
     main_records: List[Dict[str, Any]] = []
     chat_records: List[Dict[str, Any]] = []
+    timing_records: List[Dict[str, Any]] = []
 
     for rec in records:
+        kind = str(rec.get("kind", "") or "")
+        if kind in ("pipeline_timing", "tool_timing"):
+            timing_records.append(rec)
+            continue
+
         mode = str(rec.get("mode", "") or "")
         if mode == "chat":
             chat_records.append(rec)
@@ -187,6 +276,11 @@ def render_dashboard(limit: int = 50) -> HTMLResponse:
         chat_records,
         row_prefix="chat-rec",
         empty_message="No chat history yet. Open /chat and send a message.",
+    )
+    rows_timing = _build_timing_rows_html(
+        timing_records,
+        row_prefix="timing-rec",
+        empty_message="No performance timings yet. Trigger /api/code, /api/vision, or tools to see activity.",
     )
 
     html = f"""
@@ -413,6 +507,33 @@ def render_dashboard(limit: int = 50) -> HTMLResponse:
         </thead>
         <tbody>
           {rows_chat}
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="section-title" style="margin-top: 12px;">SYSTEM PERFORMANCE</div>
+      <div class="meta" style="margin-bottom: 6px;">
+        <div style="font-size: 11px; color: #9ca3af;">
+          Timing from code, vision, and tools &bull; up to last {len(timing_records)} entries
+        </div>
+        <div style="font-size: 11px; color: #6b7280;">
+          Use this to spot slow models, timeouts, or failing tools.
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Type</th>
+            <th>Target</th>
+            <th>Duration (s)</th>
+            <th>Status</th>
+            <th>Error (preview)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows_timing}
         </tbody>
       </table>
     </section>

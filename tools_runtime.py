@@ -3,21 +3,25 @@ Tools Runtime (V3.0 skeleton)
 
 Central registry + safe execution layer for local tools.
 
-Current status (V3.0 step 1):
+Current status (V3.x with HARDNING BASE Phase 2):
 - Registry and execution helpers are defined.
 - A single demo "ping" tool is registered.
 - The runtime is controlled by feature flags in config.py:
     TOOLS_RUNTIME_ENABLED
     TOOLS_RUNTIME_LOGGING
-- No existing endpoints import or rely on this yet.
+- Tool execution is:
+    - bounded by TOOLS_MAX_RUNTIME_SECONDS (per-call timeout)
+    - measured and logged into history as timing entries
 """
 
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
-from config import TOOLS_RUNTIME_ENABLED, TOOLS_RUNTIME_LOGGING
+from config import TOOLS_RUNTIME_ENABLED, TOOLS_RUNTIME_LOGGING, TOOLS_MAX_RUNTIME_SECONDS
 from history import history_logger
 
 
@@ -37,6 +41,10 @@ class Tool:
 
 # In-memory registry of all tools, keyed by tool name.
 TOOLS_REGISTRY: Dict[str, Tool] = {}
+
+# Global executor for tool execution.
+# We keep this modest to avoid tools flooding the system with threads.
+_TOOL_EXECUTOR = ThreadPoolExecutor(max_workers=4)
 
 
 def register_tool(
@@ -68,6 +76,32 @@ def register_tool(
     )
 
 
+def _log_tool_timing(
+    name: str,
+    duration_s: float,
+    status: str,
+    error: Optional[str] = None,
+) -> None:
+    """
+    Best-effort timing log for tools into history.
+
+    This does not raise; failure here must never affect tool execution.
+    """
+    try:
+        history_logger.log(
+            {
+                "kind": "tool_timing",
+                "tool": name,
+                "duration_s": round(float(duration_s), 3),
+                "status": status,
+                "error": error,
+            }
+        )
+    except Exception:
+        # Logging must be best-effort only.
+        pass
+
+
 def execute_tool(
     name: str,
     args: Optional[Dict[str, Any]] = None,
@@ -95,11 +129,13 @@ def execute_tool(
     - If the tool is not found:
         returns ok=False with an error.
     - Exceptions inside the tool are caught and reported as error.
+    - If the tool takes longer than TOOLS_MAX_RUNTIME_SECONDS:
+        returns ok=False with error="tool_timeout", result=None.
     """
     args = args or {}
 
     if not TOOLS_RUNTIME_ENABLED:
-        return {
+        record = {
             "ok": False,
             "tool": name,
             "result": None,
@@ -109,10 +145,11 @@ def execute_tool(
                 "context_provided": context is not None,
             },
         }
+        return record
 
     tool = TOOLS_REGISTRY.get(name)
     if tool is None:
-        return {
+        record = {
             "ok": False,
             "tool": name,
             "result": None,
@@ -122,14 +159,27 @@ def execute_tool(
                 "context_provided": context is not None,
             },
         }
+        return record
 
     result: Any = None
     error: Optional[str] = None
+    status: str = "ok"
 
+    start = time.monotonic()
     try:
-        result = tool.func(args, context)
+        future = _TOOL_EXECUTOR.submit(tool.func, args, context)
+        result = future.result(timeout=TOOLS_MAX_RUNTIME_SECONDS)
+    except FuturesTimeoutError:
+        status = "timeout"
+        error = f"tool_timeout: exceeded TOOLS_MAX_RUNTIME_SECONDS={TOOLS_MAX_RUNTIME_SECONDS}s"
+        result = None
     except Exception as exc:
+        status = "error"
         error = f"{type(exc).__name__}: {exc!s}"
+        result = None
+    finally:
+        duration = time.monotonic() - start
+        _log_tool_timing(name, duration, status, error)
 
     record = {
         "ok": error is None,
