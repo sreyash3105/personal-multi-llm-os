@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any 
 
 from pathlib import Path
 
@@ -25,6 +25,8 @@ from config import (
 from dashboard import render_dashboard
 from vision_pipeline import run_vision
 from chat_ui import router as chat_router
+from tools_runtime import execute_tool
+
 
 
 app = FastAPI(title="Local Code, Study & Chat Assistant")
@@ -56,6 +58,16 @@ class StudyResponse(BaseModel):
 class VisionResponse(BaseModel):
     output: str
 
+class ToolExecRequest(BaseModel):
+    tool: str
+    args: Dict[str, Any] | None = None
+
+
+class ToolExecResponse(BaseModel):
+    ok: bool
+    tool: str
+    result: Any | None = None
+    error: str | None = None
 
 # =========================
 # Escalation helpers
@@ -402,6 +414,36 @@ async def vision_endpoint(
 
     return VisionResponse(output=vision_output)
 
+# =========================
+# /api/tools/execute endpoint
+# =========================
+
+@app.post("/api/tools/execute", response_model=ToolExecResponse)
+def tools_execute(req: ToolExecRequest):
+    """
+    Manual tools runtime execution endpoint.
+
+    This is primarily for development / debugging and is intentionally
+    simple. It delegates to tools_runtime.execute_tool, which handles
+    feature flags, registry lookup, and error handling.
+
+    Request body:
+        {
+          "tool": "ping",
+          "args": { "message": "hello" }
+        }
+    """
+    context = {
+        "source": "api.tools.execute",
+    }
+    record = execute_tool(req.tool, req.args or {}, context)
+
+    return ToolExecResponse(
+        ok=bool(record.get("ok")),
+        tool=record.get("tool") or req.tool,
+        result=record.get("result"),
+        error=record.get("error"),
+    )
 
 # =========================
 # /dashboard endpoint
