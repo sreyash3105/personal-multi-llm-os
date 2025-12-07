@@ -56,6 +56,9 @@ Public API is kept compatible with the previous JSON implementation:
 - get_messages(profile_id, chat_id) -> List[Dict]
 
 All timestamps are still WhatsApp-style strings.
+
+HARDNING BASE:
+- SQLite connection hardened with WAL journaling and a sensible timeout.
 """
 
 from __future__ import annotations
@@ -121,13 +124,24 @@ def _next_alpha_id(existing: List[str], uppercase: bool = True) -> str:
 
 def _get_conn() -> sqlite3.Connection:
     """
-    Open a SQLite connection with row_factory=Row and foreign_keys ON.
+    Open a SQLite connection with:
+    - row_factory=Row
+    - foreign_keys ON
+    - WAL journal mode for better durability
+    - a reasonable timeout to reduce 'database is locked' errors.
     """
     _ensure_dirs()
-    conn = sqlite3.connect(DB_PATH)
+    # timeout in seconds: how long to wait if the DB is locked
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
-    # Ensure foreign keys (for cascades) are enforced on every connection.
     conn.execute("PRAGMA foreign_keys = ON;")
+    # HARDNING BASE: better journaling & sync settings
+    try:
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+    except sqlite3.DatabaseError:
+        # If PRAGMAs fail for some reason, continue with defaults.
+        pass
     return conn
 
 
@@ -250,8 +264,10 @@ def get_profile(profile_id: str) -> Optional[Dict[str, Any]]:
     return _profile_row_to_dict(row)
 
 
-def create_profile(display_name: Optional[str] = None,
-                   model_override: Optional[str] = None) -> Dict[str, Any]:
+def create_profile(
+    display_name: Optional[str] = None,
+    model_override: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Create a new profile with next alpha ID: A..Z..AA.. etc.
     """
@@ -365,9 +381,11 @@ def list_chats(profile_id: str) -> List[Dict[str, Any]]:
     return [_chat_row_to_dict(r, r["message_count"]) for r in rows]
 
 
-def create_chat(profile_id: str,
-                display_name: Optional[str] = None,
-                model_override: Optional[str] = None) -> Dict[str, Any]:
+def create_chat(
+    profile_id: str,
+    display_name: Optional[str] = None,
+    model_override: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Create a new chat within a profile.
     Chat IDs follow a..z..aa.. pattern (lowercase).
@@ -378,15 +396,18 @@ def create_chat(profile_id: str,
         # Ensure profile exists
         cur.execute("SELECT 1 FROM profiles WHERE id = ?;", (profile_id,))
         if not cur.fetchone():
-            # Auto-create profile if missing (optional logic; matches old "auto-create" spirit)
+            # Auto-create profile if missing (matches old "auto-create" spirit)
             # You can change this to raise if you prefer strictness.
             prof = create_profile(display_name=None, model_override=None)
             if prof["id"] != profile_id:
                 # If caller used a non-existing ID, we keep the requested profile_id behaviour simple:
                 # just create a profile with that id manually.
                 cur.execute(
-                    "INSERT OR IGNORE INTO profiles (id, display_name, model_override, created_at) "
-                    "VALUES (?, ?, ?, ?);",
+                    """
+                    INSERT OR IGNORE INTO profiles
+                      (id, display_name, model_override, created_at)
+                    VALUES (?, ?, ?, ?);
+                    """,
                     (profile_id, profile_id, None, _format_ts()),
                 )
 
@@ -488,7 +509,11 @@ def rename_chat(profile_id: str, chat_id: str, new_display_name: str) -> bool:
         return cur.rowcount > 0
 
 
-def set_chat_model(profile_id: str, chat_id: str, model_override: Optional[str]) -> bool:
+def set_chat_model(
+    profile_id: str,
+    chat_id: str,
+    model_override: Optional[str],
+) -> bool:
     with _get_conn() as conn:
         cur = conn.cursor()
         cur.execute(

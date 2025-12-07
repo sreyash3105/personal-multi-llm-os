@@ -7,6 +7,9 @@ Per-profile knowledge base (simple SQLite backend).
 This is intentionally minimal for V1:
 - Single table: profile_snippets
 - Basic operations: insert, list, build_context
+
+HARDNING BASE:
+- SQLite connection hardened with WAL journaling, NORMAL sync, and a sensible timeout.
 """
 
 import sqlite3
@@ -23,8 +26,24 @@ DB_PATH = DATA_DIR / "profile_kb.sqlite3"
 
 
 def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    """
+    Open a SQLite connection with:
+    - row_factory = Row
+    - WAL journal mode for better durability under concurrent access
+    - synchronous = NORMAL for a good safety/speed balance
+    - a reasonable timeout to reduce 'database is locked' errors.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
+
+    try:
+        conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+    except sqlite3.DatabaseError:
+        # If PRAGMAs fail, continue with defaults instead of breaking.
+        pass
+
     return conn
 
 

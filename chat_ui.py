@@ -340,6 +340,40 @@ or statuses, interpret them briefly. Do NOT include the raw JSON in your answer.
         }
 
 
+def _render_message_for_prompt(msg: Dict[str, Any]) -> str:
+    """
+    Render a stored chat message into a compact text line for the LLM prompt.
+
+    Special handling for vision messages:
+
+      __IMG__<mime>|<base64>\n<caption>
+
+    We strip the base64 blob entirely and keep only a short marker + caption so
+    the model understands an image was involved, without polluting the prompt.
+    """
+    role = (msg.get("role") or "user").upper()
+    text = msg.get("text") or ""
+
+    if text.startswith("__IMG__"):
+        # Format: __IMG__{mime}|{b64}\n{caption}
+        lines = text.splitlines()
+        caption = ""
+        if len(lines) > 1:
+            caption = "\n".join(lines[1:]).strip()
+
+        if caption:
+            return f"{role} (image): (caption: {caption})"
+        return f"{role} (image): (no caption, image attached)"
+
+    return f"{role}: {text}"
+
+
+# =========================
+# Profile management API
+# =========================
+
+
+
 # =========================
 # Profile management API
 # =========================
@@ -577,9 +611,7 @@ def api_chat(req: ChatRequest):
 
     convo_lines: List[str] = []
     for msg in messages:
-        role = msg.get("role", "user").upper()
-        text = msg.get("text", "")
-        convo_lines.append(f"{role}: {text}")
+        convo_lines.append(_render_message_for_prompt(msg))
 
     convo_lines.append(f"USER: {req.prompt}")
     convo_block = "\n".join(convo_lines)
