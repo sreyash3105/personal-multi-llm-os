@@ -9,17 +9,18 @@ Core AI logic for the pipeline:
 - building context from history when requested
 
 HARDENING BASE · V3.4:
-- Simple concurrency guard for heavy stages (coder/reviewer/judge).
+- Simple concurrency guard for heavy stages (coder/reviewer/judge/study).
 - Optional per-profile soft lock (serializes heavy work per profile when provided).
 - Stage-level timeouts using OLLAMA_REQUEST_TIMEOUT_SECONDS.
 - Input/output size guards to avoid huge payloads.
 - Logs timing + status for each stage via history_logger.
 """
 
+from __future__ import annotations
+
 import json
 import time
 import threading
-import concurrent.futures
 from typing import Any, Dict, Optional, Tuple
 
 import requests
@@ -37,6 +38,7 @@ from config import (
     MAX_CONCURRENT_HEAVY_REQUESTS,
 )
 from prompts import REVIEWER_SYSTEM_PROMPT, JUDGE_SYSTEM_PROMPT, STUDY_SYSTEM_PROMPT
+from timeout_policy import run_with_retries
 from history import load_recent_records, history_logger
 
 
@@ -50,26 +52,79 @@ MAX_OUTPUT_CHARS = 12000
 
 def _sanitize_input_text(text: Any) -> str:
     """
-    Guardrail for incoming user text before building prompts.
+    Guardrail for incoming user text before passing it into prompts.
+
+    - Coerces non-str to str.
+    - Truncates extremely long inputs, with a short notice appended.
     """
+    if text is None:
+        return ""
     if not isinstance(text, str):
-        text = str(text or "")
+        text = str(text)
+
     if len(text) <= MAX_INPUT_CHARS:
         return text
-    head = text[:MAX_INPUT_CHARS]
-    return head + "\n\n[Input truncated for safety — original content was too long.]"
+
+    head = text[: MAX_INPUT_CHARS - 200]
+    notice = (
+        "\n\n[Input truncated for safety — original prompt was too long. "
+        "This may affect answer completeness.]"
+    )
+    return head + notice
 
 
 def _clamp_output_text(text: Any) -> str:
     """
-    Guardrail for model outputs before they propagate further.
+    Guardrail for outgoing model text before returning to callers.
+
+    - Coerces non-str to str.
+    - Truncates extremely long outputs, with a short notice appended.
     """
+    if text is None:
+        return ""
     if not isinstance(text, str):
-        text = str(text or "")
+        text = str(text)
+
     if len(text) <= MAX_OUTPUT_CHARS:
         return text
-    head = text[:MAX_OUTPUT_CHARS]
-    return head + "\n\n[Output truncated — response shortened to avoid overload.]"
+
+    head = text[: MAX_OUTPUT_CHARS - 200]
+    notice = (
+        "\n\n[Output truncated for safety — model tried to generate an extremely long answer. "
+        "Some details may be missing.]"
+    )
+    return head + notice
+
+
+# =========================
+# Low-level Ollama call
+# =========================
+
+def call_ollama(prompt: str, model_name: str) -> str:
+    """
+    Low-level helper for calling Ollama.
+
+    This is intentionally simple:
+    - POSTs to /api/generate
+    - Uses OLLAMA_REQUEST_TIMEOUT_SECONDS
+    - Returns the 'response' text from the final chunk
+    """
+    url = f"{OLLAMA_URL}/api/generate"
+    payload = {
+        "model": model_name,
+        "prompt": prompt,
+        "stream": False,
+    }
+
+    resp = requests.post(
+        url,
+        json=payload,
+        timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS,
+    )
+    resp.raise_for_status()
+
+    data = resp.json()
+    return data.get("response", "") or ""
 
 
 # =========================
@@ -78,20 +133,21 @@ def _clamp_output_text(text: Any) -> str:
 
 _HEAVY_SEMAPHORE = threading.BoundedSemaphore(value=MAX_CONCURRENT_HEAVY_REQUESTS)
 
+# Optional per-profile soft locks for heavy work.
 _PROFILE_LOCKS: Dict[str, threading.Lock] = {}
-_PROFILE_LOCKS_MUTEX = threading.Lock()
+_PROFILE_LOCKS_LOCK = threading.Lock()
 
 
 def _get_profile_lock(profile_id: Optional[str]) -> Optional[threading.Lock]:
     """
-    Returns a dedicated lock for the given profile_id.
+    Get or create a soft lock for a given profile.
 
-    If profile_id is None or empty, no lock is used and the heavy semaphore alone
-    provides coarse-grained concurrency control.
+    If profile_id is None or empty, returns None (no per-profile serialization).
     """
     if not profile_id:
         return None
-    with _PROFILE_LOCKS_MUTEX:
+
+    with _PROFILE_LOCKS_LOCK:
         lock = _PROFILE_LOCKS.get(profile_id)
         if lock is None:
             lock = threading.Lock()
@@ -99,10 +155,20 @@ def _get_profile_lock(profile_id: Optional[str]) -> Optional[threading.Lock]:
         return lock
 
 
+# =========================
+# Timing logs
+# =========================
+
 def _log_timing(stage: str, model_name: str, duration_s: float, status: str, error: Optional[str] = None) -> None:
     """
-    Best-effort timing logger into history.
-    Failure here must never break the main flow.
+    Record a small timing record for the dashboard.
+
+    kind: "pipeline_timing"
+      - stage: "coder" | "reviewer" | "judge" | "study"
+      - model: model name used
+      - duration_s: float seconds
+      - status: "ok" | "error" | "timeout"
+      - error: optional error string
     """
     try:
         history_logger.log(
@@ -116,66 +182,169 @@ def _log_timing(stage: str, model_name: str, duration_s: float, status: str, err
             }
         )
     except Exception:
-        # Logging is best-effort only.
+        # timing logs should never break the main flow
         pass
 
 
 def _run_with_timeout(fn, stage: str, model_name: str):
     """
-    Stage-level timeout wrapper.
+    Stage-level timeout + retry wrapper.
 
-    Even though call_ollama already uses an HTTP timeout, this
-    ensures the stage itself is bounded and cannot hang indefinitely
-    if something goes wrong beneath requests.
+    Uses the shared timeout_policy.run_with_retries helper to ensure:
+    - per-attempt timeout (OLLAMA_REQUEST_TIMEOUT_SECONDS)
+    - bounded retries with simple backoff
+    - no behaviour change beyond "best-effort retry on transient failure".
     """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(fn)
-        return future.result(timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS)
+    # NOTE: Stage-level timing is still logged by the individual stage
+    # functions (run_coder / run_reviewer / run_judge / run_study) via
+    # _log_timing in their own try/finally blocks.
+    return run_with_retries(
+        fn=fn,
+        label=stage,
+        max_retries=1,
+        base_delay_s=1.0,
+        timeout_s=OLLAMA_REQUEST_TIMEOUT_SECONDS,
+        timing_cb=None,
+        is_retryable_error=None,
+    )
 
 
 # =========================
-# Low-level model call
+# Mode parsing
 # =========================
 
-def call_ollama(prompt: str, model_name: str) -> str:
+def extract_mode_and_prompt(raw_prompt: str) -> Tuple[str, str]:
     """
-    Basic Ollama call wrapper.
+    Parse the raw prompt to detect special modes.
 
-    Uses OLLAMA_REQUEST_TIMEOUT_SECONDS for HTTP timeout.
-    Caller is responsible for stage-level timeout and size clamping.
+    Recognized tags (prefix on the first line):
+      - "///raw"           -> coder only, no reviewer
+      - "///review-only"   -> reviewer only, treat prompt as code to review
+      - "///ctx"           -> coder+reviewer with recent history context
+      - "///continue"      -> same as ///ctx, meant for "continue previous"
+      - default            -> coder+reviewer (no history context)
+
+    Returns:
+      mode, cleaned_prompt
     """
-    payload = {"model": model_name, "prompt": prompt, "stream": False}
-    resp = requests.post(OLLAMA_URL, json=payload, timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS)
-    resp.raise_for_status()
-    return (resp.json().get("response") or "").strip()
+    if not raw_prompt:
+        return DEFAULT_MODE, ""
+
+    # Normalize newlines and strip leading/trailing whitespace
+    text = str(raw_prompt).replace("\r\n", "\n").strip()
+    if not text:
+        return DEFAULT_MODE, ""
+
+    lines = text.split("\n", 1)
+    first_line = lines[0].strip()
+    rest = lines[1] if len(lines) > 1 else ""
+
+    mode = DEFAULT_MODE
+    if first_line.startswith("///raw"):
+        mode = "code_raw"
+        cleaned = rest.strip()
+    elif first_line.startswith("///review-only"):
+        mode = "review_only"
+        cleaned = rest.strip()
+    elif first_line.startswith("///ctx") or first_line.startswith("///continue"):
+        mode = "code_reviewed_ctx"
+        cleaned = rest.strip()
+    else:
+        cleaned = text
+
+    cleaned = _sanitize_input_text(cleaned)
+    return mode, cleaned
+
+
+def extract_study_style_and_prompt(raw_prompt: str) -> Tuple[str, str]:
+    """
+    Parse the raw prompt to determine the study style.
+
+    Recognized tags (can be on their own line OR prefix on same line):
+      - "///short"   -> short explanation
+      - "///deep"    -> deep explanation
+      - "///quiz"    -> quiz mode
+      - default      -> normal explanation
+
+    Examples:
+      "///short Explain X"        -> style="short", prompt="Explain X"
+      "///short\nExplain X"       -> style="short", prompt="Explain X"
+    """
+    if not raw_prompt:
+        return "normal", ""
+
+    text = str(raw_prompt).replace("\r\n", "\n").strip()
+    if not text:
+        return "normal", ""
+
+    lines = text.split("\n")
+    first_line = lines[0].strip()
+    remaining_lines = lines[1:]
+
+    def _strip_tag(tag: str) -> str:
+        # Remove the tag from the first line and combine with remaining lines.
+        # Handles both:
+        #   "///short Explain X"
+        #   "///short\nExplain X"
+        content_on_first = first_line[len(tag):].strip()
+        rest = "\n".join(remaining_lines).strip()
+        if content_on_first and rest:
+            combined = content_on_first + "\n" + rest
+        elif content_on_first:
+            combined = content_on_first
+        else:
+            combined = rest
+        return combined.strip()
+
+    style = "normal"
+    cleaned = text
+
+    if first_line.startswith("///short"):
+        style = "short"
+        cleaned = _strip_tag("///short")
+    elif first_line.startswith("///deep"):
+        style = "deep"
+        cleaned = _strip_tag("///deep")
+    elif first_line.startswith("///quiz"):
+        style = "quiz"
+        cleaned = _strip_tag("///quiz")
+    else:
+        cleaned = text
+
+    cleaned = _sanitize_input_text(cleaned)
+    return style, cleaned
 
 
 # =========================
-# History-based context
+# History context builder
 # =========================
 
 def build_history_context(max_items: int = 5) -> str:
     """
-    Load recent interactions from history and turn them into a compact
-    textual context that can be prepended to a new request.
-    """
-    records = load_recent_records(max_items)
-    if not records:
-        return ""
+    Build a short context block from recent history for the coder.
 
+    This pulls from the 'history' database via load_recent_records and returns
+    a compact text representation suitable for inclusion in prompts.
+    """
+    records = load_recent_records(limit=max_items)
     snippets = []
-    for rec in records:
-        user = rec.get("normalized_prompt") or rec.get("original_prompt") or ""
-        final = rec.get("final_output") or ""
-        if not (user or final):
+
+    for r in records:
+        mode = r.get("mode", "")
+        original = str(r.get("original_prompt") or "").strip()
+        final = str(r.get("final_output") or "").strip()
+        if not original and not final:
             continue
 
-        snippets.append(
-            "User request:\n"
-            + str(user).strip()
+        snippet = (
+            f"Mode: {mode}\n"
+            + "User prompt:\n"
+            + original
             + "\n\nAssistant code:\n"
             + str(final).strip()
         )
+
+        snippets.append(snippet)
 
     if not snippets:
         return ""
@@ -208,7 +377,8 @@ Rules:
 - Do NOT include any explanation, description, or natural language.
 - Do NOT use markdown or triple backticks.
 - Do NOT add docstrings or comments unless the user explicitly asks for them.
-- If the user asks for an explanation, put it in comments inside the code, not outside.
+- If the user asks for an explanation, put it in comments inside
+the code, not outside.
 
 User request:
 {user_prompt}
@@ -250,6 +420,7 @@ User request:
 def run_reviewer(original_prompt: str, draft_code: str, profile_id: Optional[str] = None) -> str:
     """
     Second stage: review and improve the draft code.
+
     Uses REVIEWER_MODEL_NAME.
 
     Guardrails:
@@ -266,14 +437,14 @@ def run_reviewer(original_prompt: str, draft_code: str, profile_id: Optional[str
 
     reviewer_prompt = f"""{REVIEWER_SYSTEM_PROMPT}
 
-Original request:
+USER REQUEST:
 {original_prompt}
 
-Draft code:
+DRAFT CODE:
 {draft_code}
 
-Return ONLY the final improved code (no markdown fences, no explanations):
-"""
+REVIEWED CODE (FINAL, IMPROVED, AND FIXED IF NEEDED):
+""".strip()
 
     start = time.monotonic()
     status = "ok"
@@ -286,15 +457,16 @@ Return ONLY the final improved code (no markdown fences, no explanations):
     _HEAVY_SEMAPHORE.acquire()
     try:
         def _call():
-            return call_ollama(reviewer_prompt, REVIEWER_MODEL_NAME).strip()
+            return call_ollama(reviewer_prompt, REVIEWER_MODEL_NAME)
 
-        reviewed = _run_with_timeout(_call, "reviewer", REVIEWER_MODEL_NAME)
-        reviewed = _clamp_output_text(reviewed or draft_code)
-        return reviewed or draft_code
+        result = _run_with_timeout(_call, "reviewer", REVIEWER_MODEL_NAME)
+        result = _clamp_output_text(result)
+        return result
     except Exception as e:
         status = "error"
         error_msg = str(e)
-        return _clamp_output_text(draft_code)
+        fallback = f"# Reviewer stage failed: {error_msg}\n\n# Original draft preserved below:\n{draft_code}"
+        return _clamp_output_text(fallback)
     finally:
         duration = time.monotonic() - start
         _log_timing("reviewer", REVIEWER_MODEL_NAME, duration, status, error_msg)
@@ -307,7 +479,12 @@ Return ONLY the final improved code (no markdown fences, no explanations):
 # Judge stage
 # =========================
 
-def run_judge(original_prompt: str, coder_output: str, reviewer_output: str, profile_id: Optional[str] = None) -> Dict[str, Any]:
+def run_judge(
+    original_prompt: str,
+    coder_output: str,
+    reviewer_output: str,
+    profile_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Third stage: judge the answer for confidence and conflict.
 
@@ -328,25 +505,39 @@ def run_judge(original_prompt: str, coder_output: str, reviewer_output: str, pro
     coder_output = _sanitize_input_text(coder_output)
     reviewer_output = _sanitize_input_text(reviewer_output)
 
-    judge_input = f"""
-SYSTEM_PROMPT:
-{JUDGE_SYSTEM_PROMPT}
+    judge_prompt = f"""{JUDGE_SYSTEM_PROMPT}
+
+You will see:
+- USER_REQUEST: what the user asked.
+- CODER_ANSWER: the initial code from the fast coder.
+- REVIEWER_ANSWER: the final code after the reviewer stage.
+
+Your job:
+1) Rate how confident you are that the final answer is correct, safe, and useful,
+   as an integer 0-10 (higher = better).
+2) Rate how likely it is that the answer is wrong, misleading, unsafe, or incomplete,
+   as an integer 0-10 (higher = more problematic).
+3) Write a short 1-3 sentence explanation summarizing your judgement.
+
+Return STRICT JSON ONLY, with NO extra commentary, in this exact shape:
+
+{
+  "confidence_score": <int 0-10>,
+  "conflict_score": <int 0-10>,
+  "judgement_summary": "<short explanation>"
+}
 
 USER_REQUEST:
 {original_prompt}
 
-CODER_OUTPUT:
+CODER_ANSWER:
 {coder_output}
 
-REVIEWER_OUTPUT:
+REVIEWER_ANSWER:
 {reviewer_output}
-""".strip()
 
-    raw_response = ""
-    parse_error: Optional[str] = None
-    confidence_score: Optional[int] = None
-    conflict_score: Optional[int] = None
-    summary = ""
+JSON:
+""".strip()
 
     start = time.monotonic()
     status = "ok"
@@ -359,28 +550,46 @@ REVIEWER_OUTPUT:
     _HEAVY_SEMAPHORE.acquire()
     try:
         def _call():
-            return call_ollama(judge_input, JUDGE_MODEL_NAME).strip()
+            return call_ollama(judge_prompt, JUDGE_MODEL_NAME)
 
-        raw_response = _run_with_timeout(_call, "judge", JUDGE_MODEL_NAME)
-        raw_response = _clamp_output_text(raw_response)
-        candidate = raw_response
+        raw = _run_with_timeout(_call, "judge", JUDGE_MODEL_NAME)
+        raw = _clamp_output_text(raw)
 
+        # Try to extract JSON if the model wrapped it in extra text
+        candidate = raw
         if "{" in candidate and "}" in candidate:
             candidate = candidate[candidate.find("{"): candidate.rfind("}") + 1]
 
         data = json.loads(candidate)
 
-        if data.get("confidence_score") is not None:
-            confidence_score = int(data.get("confidence_score"))
-        if data.get("conflict_score") is not None:
-            conflict_score = int(data.get("conflict_score"))
+        confidence_score = None
+        conflict_score = None
+        summary = ""
 
+        if data.get("confidence_score") is not None:
+            confidence_score = int(data["confidence_score"])
+        if data.get("conflict_score") is not None:
+            conflict_score = int(data["conflict_score"])
         summary = str(data.get("judgement_summary") or "").strip()
+
+        return {
+            "confidence_score": confidence_score,
+            "conflict_score": conflict_score,
+            "judgement_summary": summary or "No structured summary provided by judge.",
+            "raw_response": raw,
+            "parse_error": None,
+        }
 
     except Exception as e:
         status = "error"
         error_msg = str(e)
-        parse_error = str(e)
+        return {
+            "confidence_score": None,
+            "conflict_score": None,
+            "judgement_summary": "Judge failed.",
+            "raw_response": "",
+            "parse_error": str(e),
+        }
     finally:
         duration = time.monotonic() - start
         _log_timing("judge", JUDGE_MODEL_NAME, duration, status, error_msg)
@@ -388,68 +597,33 @@ REVIEWER_OUTPUT:
         if profile_lock:
             profile_lock.release()
 
-    return {
-        "confidence_score": confidence_score,
-        "conflict_score": conflict_score,
-        "judgement_summary": summary or "No structured summary available.",
-        "raw_response": raw_response,
-        "parse_error": parse_error,
-    }
-
 
 # =========================
-# Study mode helpers
+# Study / teaching stage
 # =========================
-
-def extract_study_style_and_prompt(text: str) -> Tuple[str, str]:
-    """
-    For /api/study we support simple first-line tags:
-
-    ///short  -> short explanation
-    ///deep   -> deep dive explanation
-    ///quiz   -> quiz mode
-    (no tag) -> normal teaching mode
-    """
-    if not text:
-        return "normal", ""
-
-    stripped = text.lstrip()
-    if not stripped.startswith("///"):
-        return "normal", text.strip()
-
-    lines = stripped.splitlines()
-    first_line = lines[0].strip()
-    rest = "\n".join(lines[1:]).strip()
-
-    tag = first_line[3:].strip().lower()
-
-    if tag in ("short", "brief"):
-        return "short", rest
-    if tag in ("deep", "dive", "detailed"):
-        return "deep", rest
-    if tag in ("quiz", "test"):
-        return "quiz", rest
-
-    return "normal", rest
-
 
 def run_study(user_prompt: str, style: str = "normal") -> str:
     """
-    Study / teaching stage: explanations, quizzes, etc.
-    Uses STUDY_MODEL_NAME and STUDY_SYSTEM_PROMPT.
+    Study / teaching helper.
+
+    style:
+      - "normal"
+      - "short"
+      - "deep"
+      - "quiz"
     """
-    style = (style or "normal").lower()
+    user_prompt = _sanitize_input_text(user_prompt)
+
+    style = (style or "normal").strip().lower()
     if style not in ("normal", "short", "deep", "quiz"):
         style = "normal"
 
-    user_prompt = _sanitize_input_text(user_prompt)
+    # We keep the prompt simple here, with style injected clearly.
+    study_prompt = f"""{STUDY_SYSTEM_PROMPT}
 
-    study_prompt = f"""
-{STUDY_SYSTEM_PROMPT}
+STYLE: {style}
 
-Requested style: {style}
-
-User request / topic:
+USER_REQUEST:
 {user_prompt}
 """.strip()
 
@@ -457,68 +631,20 @@ User request / topic:
     status = "ok"
     error_msg: Optional[str] = None
 
+    _HEAVY_SEMAPHORE.acquire()
     try:
         def _call():
             return call_ollama(study_prompt, STUDY_MODEL_NAME)
 
         result = _run_with_timeout(_call, "study", STUDY_MODEL_NAME)
-        return _clamp_output_text(result)
+        result = _clamp_output_text(result)
+        return result
     except Exception as e:
         status = "error"
         error_msg = str(e)
-        fallback = f"Study stage failed: {error_msg}"
+        fallback = f"(Study stage failed: {error_msg})"
         return _clamp_output_text(fallback)
     finally:
         duration = time.monotonic() - start
         _log_timing("study", STUDY_MODEL_NAME, duration, status, error_msg)
-
-
-# =========================
-# Tools runtime integration hooks (placeholder)
-# =========================
-
-def maybe_run_tool_call(model_response: str, context: Optional[Dict[str, Any]] = None) -> str:
-    """
-    Placeholder hook for future tools integration.
-    For now this function is a no-op and simply returns the original
-    model response unchanged.
-    """
-    return model_response
-
-
-# =========================
-# Mode parsing (tags from laptop) for /api/code
-# =========================
-
-def extract_mode_and_prompt(text: str) -> Tuple[str, str]:
-    """
-    Supports special first-line tags for /api/code:
-
-    ///raw          -> coder only (no reviewer)
-    ///review-only  -> reviewer only (input is treated as draft code)
-    ///ctx          -> coder -> reviewer WITH history context
-    ///continue     -> same as ///ctx
-
-    No tag         -> coder -> reviewer (default, with auto-escalation logic)
-    """
-    if not text:
-        return DEFAULT_MODE, ""
-
-    stripped = text.lstrip()
-    if not stripped.startswith("///"):
-        return DEFAULT_MODE, text.strip()
-
-    lines = stripped.splitlines()
-    first_line = lines[0].strip()
-    rest = "\n".join(lines[1:]).strip()
-
-    tag = first_line[3:].strip().lower()
-
-    if tag in ("raw", "coder-only"):
-        return "code_raw", rest
-    if tag in ("review-only", "review"):
-        return "review_only", rest
-    if tag in ("ctx", "continue", "context"):
-        return "code_reviewed_ctx", rest
-
-    return DEFAULT_MODE, rest
+        _HEAVY_SEMAPHORE.release()

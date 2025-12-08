@@ -1,65 +1,57 @@
 """
-chat_ui.py
+Chat UI + API layer for multi-profile chat workspace.
 
-Chat workspace API (multi-profile, multi-chat) for the Personal Local AI OS.
+Responsibilities:
+- Multi-profile, multi-chat text workspace
+- Main /api/chat endpoint (normal + smart chat)
+- Vision-in-chat endpoint
+- Tools-in-chat integration (///tool, ///tool+chat)
+- Simple profile/chat/messages CRUD for static/chat.html
 
-Features:
-- Profiles (per-project / per-context workspaces)
-- Chats inside profiles
-- Normal vs Smart chat modes
-- Vision-in-chat (image upload + LLaVA)
-- Tool commands in chat:
-    ///tool TOOL_NAME
-    { "arg": "value" }
-
-    ///tool+chat TOOL_NAME
-    { "arg": "value" }
-
-Normal vs Smart:
-- normal → uses CHAT_MODEL_NAME (or overrides), single model call
-- smart  → uses SMART_CHAT_MODEL_NAME and runs planner → answer → judge
-           via chat_pipeline.run_chat_smart
-
-This file exposes the FastAPI router mounted by code_server.py as `chat_router`.
+This module is "sacred" in V3.4.x — only incremental, low-risk edits allowed.
 """
+
+from __future__ import annotations
 
 import base64
 import json
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form
+from fastapi import APIRouter, UploadFile, File, Form, Query, HTTPException
 from pydantic import BaseModel
 
 from config import (
     CHAT_MODEL_NAME,
+    SMART_CHAT_MODEL_NAME,
     AVAILABLE_MODELS,
     VISION_ENABLED,
-    SMART_CHAT_MODEL_NAME,
     TOOLS_IN_CHAT_ENABLED,
     TOOLS_CHAT_HYBRID_ENABLED,
+    VISION_MODEL_NAME,
 )
-from vision_pipeline import run_vision
-from pipeline import call_ollama
 from history import history_logger
+from pipeline import call_ollama
+from profile_kb import build_profile_context
+from tools_runtime import execute_tool
+from chat_pipeline import run_chat_smart
+from vision_pipeline import run_vision
 from chat_storage import (
     list_profiles,
     create_profile,
     rename_profile,
-    delete_profile,
     set_profile_model,
+    delete_profile,
+    get_profile,
     list_chats,
     create_chat,
     rename_chat,
-    delete_chat,
     set_chat_model,
+    delete_chat,
+    get_chat,
     get_messages,
     append_message,
-    get_profile,
-    get_chat,
 )
-from tools_runtime import execute_tool
-from chat_pipeline import run_chat_smart
-from profile_kb import build_profile_context
+from io_guards import sanitize_chat_input, clamp_chat_output, clamp_tool_output
 
 router = APIRouter()
 
@@ -68,8 +60,22 @@ router = APIRouter()
 # Pydantic models
 # =========================
 
+
+class ChatRequest(BaseModel):
+    profile_id: Optional[str] = None
+    chat_id: Optional[str] = None
+    prompt: str
+    smart: bool = False
+
+
+class ChatResponse(BaseModel):
+    output: str
+    profile_id: str
+    chat_id: str
+
+
 class ProfileCreate(BaseModel):
-    display_name: Optional[str] = None
+    display_name: str
     model_override: Optional[str] = None
 
 
@@ -80,7 +86,7 @@ class ProfileUpdate(BaseModel):
 
 class ChatCreate(BaseModel):
     profile_id: str
-    display_name: Optional[str] = None
+    display_name: str
     model_override: Optional[str] = None
 
 
@@ -89,77 +95,58 @@ class ChatUpdate(BaseModel):
     model_override: Optional[str] = None
 
 
-class ChatRequest(BaseModel):
-    prompt: str
-    profile_id: Optional[str] = None
-    chat_id: Optional[str] = None
-    smart: Optional[bool] = False  # when True, use smart chat pipeline
-
-
-class ChatResponse(BaseModel):
-    output: str
-    profile_id: str
-    chat_id: str
-
-
 class ProfileSummaryRequest(BaseModel):
     profile_id: str
 
 
 # =========================
-# Helpers
+# Internal helpers
 # =========================
+
 
 def _ensure_profile(profile_id: Optional[str]) -> Dict[str, Any]:
     """
-    Resolve or auto-create a profile.
+    Ensure a valid profile exists.
 
-    - If profile_id is None:
-        - return first existing profile if any
-        - else create a new default profile
-    - If profile_id is provided but missing in DB -> 404
+    - If profile_id is provided and exists, return it.
+    - If profile_id is missing or invalid, auto-create a "Default" profile.
     """
+    if profile_id:
+        prof = get_profile(profile_id)
+        if prof:
+            return prof
+
+    # Auto-create a default profile if nothing valid was provided.
     profiles = list_profiles()
+    if profiles:
+        return profiles[0]
 
-    if not profile_id:
-        if profiles:
-            return profiles[0]
-        return create_profile(display_name=None, model_override=None)
-
-    prof = get_profile(profile_id)
-    if not prof:
-        raise HTTPException(status_code=404, detail="Profile '%s' not found" % profile_id)
+    prof = create_profile(display_name="Default", model_override=None)
     return prof
 
 
 def _ensure_chat(profile_id: str, chat_id: Optional[str]) -> Dict[str, Any]:
     """
-    Resolve or auto-create a chat in a given profile.
+    Ensure a valid chat exists for a profile.
 
-    - If chat_id is None:
-        - return first existing chat if any
-        - else create a new default chat
-    - If chat_id is provided but missing:
-        - create a new chat whose display_name defaults to chat_id
+    - If chat_id is provided and exists, return it.
+    - Else, create a new chat with a simple default name.
     """
+    if chat_id:
+        chat = get_chat(profile_id, chat_id)
+        if chat:
+            return chat
+
     chats = list_chats(profile_id)
+    if chats:
+        return chats[0]
 
-    if not chat_id:
-        if chats:
-            return chats[0]
-        return create_chat(profile_id=profile_id)
-
-    chat = get_chat(profile_id, chat_id)
-    if not chat:
-        return create_chat(profile_id=profile_id, display_name=chat_id)
-
-    return {
-        "id": chat.get("id", chat_id),
-        "display_name": chat.get("display_name", chat_id),
-        "model_override": chat.get("model_override"),
-        "created_at": chat.get("created_at", ""),
-        "message_count": len(chat.get("messages") or []),
-    }
+    chat = create_chat(
+        profile_id=profile_id,
+        display_name="New Chat",
+        model_override=None,
+    )
+    return chat
 
 
 def _resolve_model(profile: Dict[str, Any], chat: Dict[str, Any]) -> str:
@@ -211,6 +198,8 @@ def _render_message_for_prompt(msg: Dict[str, Any]) -> str:
 
 
 def _maybe_handle_tool_command(
+    *,
+    prompt_text: str,
     req: ChatRequest,
     profile: Dict[str, Any],
     profile_id: str,
@@ -234,15 +223,23 @@ def _maybe_handle_tool_command(
                         If the flag is False, falls back to raw JSON result.
 
     If TOOLS_IN_CHAT_ENABLED is False, this function always returns None.
+
+    Guardrails:
+    - prompt_text is pre-sanitized via sanitize_chat_input in api_chat.
+    - Tool result is clamped via clamp_tool_output.
+    - User-visible output is additionally clamped via clamp_chat_output.
     """
     if not TOOLS_IN_CHAT_ENABLED:
         return None
 
-    text = req.prompt or ""
+    text = prompt_text or ""
     stripped = text.lstrip()
 
     if not stripped.startswith("///tool"):
         return None
+
+    original_prompt = req.prompt or ""
+    model_used_for_summary: Optional[str] = None
 
     try:
         lines = stripped.splitlines()
@@ -254,7 +251,7 @@ def _maybe_handle_tool_command(
         else:
             prefix = "///tool"
 
-        remainder = first_line[len(prefix):].strip()
+        remainder = first_line[len(prefix) :].strip()
         if not remainder:
             error_msg = (
                 "Tool command format:\n"
@@ -264,13 +261,14 @@ def _maybe_handle_tool_command(
                 "  ///tool+chat TOOL_NAME\n"
                 "  {\"optional\": \"json args\"}\n"
             )
-            append_message(profile_id, chat_id, "user", req.prompt)
+            error_msg = clamp_chat_output(error_msg)
+            append_message(profile_id, chat_id, "user", text)
             append_message(profile_id, chat_id, "assistant", error_msg)
             history_logger.log(
                 {
                     "mode": "chat_tool_error",
-                    "original_prompt": req.prompt,
-                    "normalized_prompt": req.prompt,
+                    "original_prompt": original_prompt,
+                    "normalized_prompt": text,
                     "coder_output": None,
                     "reviewer_output": None,
                     "final_output": error_msg,
@@ -281,6 +279,10 @@ def _maybe_handle_tool_command(
                     "chat_profile_name": profile.get("display_name"),
                     "chat_id": chat_id,
                     "chat_model_used": "tool_command",
+                    "tool_record": None,
+                    "models": {
+                        "chat": None,
+                    },
                 }
             )
             return {
@@ -326,14 +328,13 @@ def _maybe_handle_tool_command(
                 record.get("error") or "Unknown error",
             )
 
+        # Guardrail: clamp tool output before using it anywhere.
+        raw_result_text = clamp_tool_output(raw_result_text)
+
         output_text = raw_result_text
         mode_label = "chat_tool_execution"
 
-        if (
-            hybrid_requested
-            and TOOLS_CHAT_HYBRID_ENABLED
-            and record.get("ok")
-        ):
+        if hybrid_requested and TOOLS_CHAT_HYBRID_ENABLED and record.get("ok"):
             try:
                 summary_prompt = """
 You are an assistant summarizing the result of a tool execution for the user.
@@ -348,29 +349,33 @@ Raw tool result (JSON or text):
 
 Explain the result in clear, concise natural language. If there are numeric values
 or statuses, interpret them briefly. Do NOT include the raw JSON in your answer.
-""".strip() % (tool_name, req.prompt, raw_result_text)
+""".strip() % (tool_name, text, raw_result_text)
 
                 summary = call_ollama(summary_prompt, SMART_CHAT_MODEL_NAME)
                 summary = (summary or "").strip()
                 if summary:
                     output_text = summary
                     mode_label = "chat_tool_hybrid"
+                    model_used_for_summary = SMART_CHAT_MODEL_NAME
             except Exception as e:
-                fallback_msg = "(Hybrid summarization failed: %s. Showing raw tool result instead.)\n\n%s" % (
-                    str(e),
-                    raw_result_text,
+                fallback_msg = (
+                    "(Hybrid summarization failed: %s. Showing raw tool result instead.)\n\n%s"
+                    % (str(e), raw_result_text)
                 )
                 output_text = fallback_msg
                 mode_label = "chat_tool_hybrid"
 
-        append_message(profile_id, chat_id, "user", req.prompt)
+        # Clamp user-visible output for chat history.
+        output_text = clamp_chat_output(output_text)
+
+        append_message(profile_id, chat_id, "user", text)
         append_message(profile_id, chat_id, "assistant", output_text)
 
         history_logger.log(
             {
                 "mode": mode_label,
-                "original_prompt": req.prompt,
-                "normalized_prompt": req.prompt,
+                "original_prompt": original_prompt,
+                "normalized_prompt": text,
                 "coder_output": None,
                 "reviewer_output": None,
                 "final_output": output_text,
@@ -382,6 +387,10 @@ or statuses, interpret them briefly. Do NOT include the raw JSON in your answer.
                 "chat_id": chat_id,
                 "chat_model_used": "tool_command",
                 "tool_record": record,
+                "models": {
+                    # Only set when we actually used the smart chat model
+                    "chat": model_used_for_summary,
+                },
             }
         )
 
@@ -393,13 +402,14 @@ or statuses, interpret them briefly. Do NOT include the raw JSON in your answer.
 
     except Exception as e:
         error_msg = "Tool command handling failed: %s" % str(e)
-        append_message(profile_id, chat_id, "user", req.prompt)
+        error_msg = clamp_chat_output(error_msg)
+        append_message(profile_id, chat_id, "user", text)
         append_message(profile_id, chat_id, "assistant", error_msg)
         history_logger.log(
             {
                 "mode": "chat_tool_error",
-                "original_prompt": req.prompt,
-                "normalized_prompt": req.prompt,
+                "original_prompt": original_prompt,
+                "normalized_prompt": text,
                 "coder_output": None,
                 "reviewer_output": None,
                 "final_output": error_msg,
@@ -410,6 +420,10 @@ or statuses, interpret them briefly. Do NOT include the raw JSON in your answer.
                 "chat_profile_name": profile.get("display_name"),
                 "chat_id": chat_id,
                 "chat_model_used": "tool_command",
+                "tool_record": None,
+                "models": {
+                    "chat": None,
+                },
             }
         )
         return {
@@ -422,6 +436,7 @@ or statuses, interpret them briefly. Do NOT include the raw JSON in your answer.
 # =========================
 # Profile management API
 # =========================
+
 
 @router.get("/api/chat/profiles")
 def api_list_profiles():
@@ -453,13 +468,16 @@ def api_update_profile(profile_id: str, body: ProfileUpdate):
 def api_delete_profile_endpoint(profile_id: str):
     ok = delete_profile(profile_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="Profile not found or could not be deleted")
+        raise HTTPException(
+            status_code=404, detail="Profile not found or could not be deleted"
+        )
     return {"ok": True}
 
 
 # =========================
 # Chat management API
 # =========================
+
 
 @router.get("/api/chat/chats")
 def api_list_chats(
@@ -502,13 +520,16 @@ def api_update_chat(profile_id: str, chat_id: str, body: ChatUpdate):
 def api_delete_chat_endpoint(profile_id: str, chat_id: str):
     ok = delete_chat(profile_id, chat_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="Chat not found or could not be deleted")
+        raise HTTPException(
+            status_code=404, detail="Chat not found or could not be deleted"
+        )
     return {"ok": True}
 
 
 # =========================
 # Messages API
 # =========================
+
 
 @router.get("/api/chat/messages")
 def api_get_messages(
@@ -534,6 +555,7 @@ def api_get_messages(
 # =========================
 # Vision-in-chat API (one-shot)
 # =========================
+
 
 @router.post("/api/chat/vision")
 async def api_chat_vision(
@@ -565,9 +587,12 @@ async def api_chat_vision(
     if not image_bytes:
         raise HTTPException(status_code=400, detail="No image data received")
 
+    raw_prompt = prompt or ""
+    safe_prompt = sanitize_chat_input(raw_prompt)
+
     vision_output = run_vision(
         image_bytes=image_bytes,
-        user_prompt=prompt or "",
+        user_prompt=safe_prompt,
         mode=mode or "auto",
     )
 
@@ -576,17 +601,20 @@ async def api_chat_vision(
         mime = "image/png"
     b64 = base64.b64encode(image_bytes).decode("ascii")
 
-    user_msg_text = prompt.strip() if prompt else "(no prompt)"
+    user_msg_text = safe_prompt.strip() if safe_prompt else "(no prompt)"
+    # IMPORTANT: we do NOT clamp here, because truncating base64 would corrupt the image.
     payload_text = "__IMG__%s|%s\n%s" % (mime, b64, user_msg_text)
 
     append_message(profile_id, chat_id, "user", payload_text)
+    # But we DO clamp the model output before storing.
+    vision_output = clamp_chat_output(vision_output)
     append_message(profile_id, chat_id, "assistant", vision_output)
 
     history_logger.log(
         {
             "mode": "chat_vision_%s" % (mode or "auto"),
-            "original_prompt": prompt,
-            "normalized_prompt": prompt,
+            "original_prompt": raw_prompt,
+            "normalized_prompt": safe_prompt,
             "coder_output": None,
             "reviewer_output": None,
             "final_output": vision_output,
@@ -597,6 +625,9 @@ async def api_chat_vision(
             "chat_profile_name": prof.get("display_name"),
             "chat_id": chat_id,
             "chat_model_used": "vision",
+            "models": {
+                "vision": VISION_MODEL_NAME,
+            },
         }
     )
 
@@ -610,6 +641,7 @@ async def api_chat_vision(
 # =========================
 # Models API
 # =========================
+
 
 @router.get("/api/chat/models")
 def api_list_models():
@@ -625,6 +657,7 @@ def api_list_models():
 # Main chat endpoint
 # =========================
 
+
 @router.post("/api/chat", response_model=ChatResponse)
 def api_chat(req: ChatRequest):
     """
@@ -632,14 +665,15 @@ def api_chat(req: ChatRequest):
 
     Flow:
     - Resolve / create profile + chat
-    - If prompt starts with ///tool or ///tool+chat -> handle via tools runtime
+    - sanitize_chat_input(req.prompt) → safe_prompt
+    - If safe_prompt starts with ///tool or ///tool+chat -> handle via tools runtime
     - Else:
         - NORMAL (smart=False):
             - Single model call using base model, with optional profile context
         - SMART (smart=True):
             - Use chat_pipeline.run_chat_smart (planner → answer → judge),
               with optional profile context
-        - Append user + assistant messages
+        - Append user + assistant messages (sanitized input + clamped output)
         - Log into history (including judge info for smart mode)
     """
     profile = _ensure_profile(req.profile_id)
@@ -648,8 +682,13 @@ def api_chat(req: ChatRequest):
     chat_meta = _ensure_chat(profile_id, req.chat_id)
     chat_id = chat_meta["id"]
 
+    # Guardrail: sanitize user input once here, reuse everywhere.
+    raw_prompt = req.prompt or ""
+    safe_prompt = sanitize_chat_input(raw_prompt)
+
     # Tool-command interception BEFORE any LLM chat pipeline
     tool_response = _maybe_handle_tool_command(
+        prompt_text=safe_prompt,
         req=req,
         profile=profile,
         profile_id=profile_id,
@@ -666,8 +705,8 @@ def api_chat(req: ChatRequest):
     messages = get_messages(profile_id, chat_id)
 
     # Build optional profile-aware context block from KB
-    # Uses current prompt text as a loose "query" for relevance.
-    context_block = build_profile_context(profile_id, req.prompt or "", max_snippets=8)
+    # Uses sanitized prompt text as a loose "query" for relevance.
+    context_block = build_profile_context(profile_id, safe_prompt, max_snippets=8)
 
     from prompts import CHAT_SYSTEM_PROMPT
 
@@ -683,7 +722,7 @@ def api_chat(req: ChatRequest):
             chat_meta=chat_meta,
             chat_id=chat_id,
             messages=messages,
-            user_prompt=req.prompt,
+            user_prompt=safe_prompt,
             context_block=context_block,
         )
         answer = smart_result["answer"]
@@ -696,7 +735,7 @@ def api_chat(req: ChatRequest):
         convo_lines: List[str] = []
         for msg in messages:
             convo_lines.append(_render_message_for_prompt(msg))
-        convo_lines.append("USER: %s" % req.prompt)
+        convo_lines.append("USER: %s" % safe_prompt)
         convo_block = "\n".join(convo_lines)
 
         if context_block:
@@ -726,16 +765,19 @@ ASSISTANT:
         smart_plan = None
         mode_label = "chat"
 
-    # Persist messages
-    append_message(profile_id, chat_id, "user", req.prompt)
+    # Guardrail: clamp assistant output before persisting / logging
+    answer = clamp_chat_output(answer or "")
+
+    # Persist messages (sanitized input + clamped output)
+    append_message(profile_id, chat_id, "user", safe_prompt)
     append_message(profile_id, chat_id, "assistant", answer)
 
     # Log to history for dashboard/trace
     history_logger.log(
         {
             "mode": mode_label,
-            "original_prompt": req.prompt,
-            "normalized_prompt": req.prompt,
+            "original_prompt": raw_prompt,
+            "normalized_prompt": safe_prompt,
             "coder_output": None,
             "reviewer_output": None,
             "final_output": answer,
@@ -748,6 +790,10 @@ ASSISTANT:
             "chat_model_used": model_name_used,
             # Extra field for smart mode; harmless for normal mode
             "chat_smart_plan": smart_plan,
+            # NEW: model-used telemetry for chat
+            "models": {
+                "chat": model_name_used,
+            },
         }
     )
 
@@ -757,6 +803,7 @@ ASSISTANT:
 # =========================
 # Profile summary API (optional, not used by current UI)
 # =========================
+
 
 @router.post("/api/chat/profile_summary")
 def api_profile_summary(body: ProfileSummaryRequest):

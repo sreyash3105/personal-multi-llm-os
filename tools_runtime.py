@@ -23,6 +23,11 @@ V3.4.x — Risk tagging skeleton:
       "kind": "tool",
     }
 - This is LOGGING ONLY (no blocking, no auth, no behavior change).
+
+V3.4.x — IO guards integration:
+- Tool results can be large; we now clamp ONLY the *logged* representation
+  using io_guards.clamp_tool_output before writing to history.
+- The value returned to callers (record["result"]) remains unmodified.
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ from typing import Any, Callable, Dict, Optional
 from config import TOOLS_RUNTIME_ENABLED, TOOLS_RUNTIME_LOGGING, TOOLS_MAX_RUNTIME_SECONDS
 from history import history_logger
 from risk import assess_risk
+from io_guards import clamp_tool_output  # new: shared output clamp for logging
 
 
 @dataclass
@@ -149,6 +155,11 @@ def execute_tool(
     - Exceptions inside the tool are caught and reported as error.
     - If the tool takes longer than TOOLS_MAX_RUNTIME_SECONDS:
         returns ok=False with error="tool_timeout", result=None.
+
+    V3.4.x IO guards:
+    - The "result" inside the returned record is NOT clamped.
+    - For history logging, we create a *separate* truncated representation
+      using clamp_tool_output, to keep SQLite entries bounded.
     """
     args = args or {}
 
@@ -219,6 +230,7 @@ def execute_tool(
         duration = time.monotonic() - start
         _log_tool_timing(name, duration, status, error)
 
+    # Full record returned to callers (no truncation here).
     record = {
         "ok": error is None,
         "tool": name,
@@ -231,8 +243,19 @@ def execute_tool(
         "risk": risk_info,
     }
 
+    # History / dashboard logging (bounded representation)
     if TOOLS_RUNTIME_LOGGING:
         try:
+            # Only clamp the *string* representation for history.
+            if error is None and result is not None:
+                logged_result = clamp_tool_output(result)
+            else:
+                logged_result = None
+
+            # Build a separate, log-safe copy of the tool record.
+            logged_tool_record = dict(record)
+            logged_tool_record["result"] = logged_result
+
             history_logger.log(
                 {
                     "mode": "tool_execution",
@@ -240,11 +263,11 @@ def execute_tool(
                     "normalized_prompt": None,
                     "coder_output": None,
                     "reviewer_output": None,
-                    "final_output": result if error is None else None,
+                    "final_output": logged_result,
                     "escalated": False,
                     "escalation_reason": "",
                     "judge": None,
-                    "tool_record": record,
+                    "tool_record": logged_tool_record,
                 }
             )
         except Exception:

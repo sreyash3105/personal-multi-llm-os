@@ -20,6 +20,12 @@ from config import (
     ESCALATION_CONFIDENCE_THRESHOLD,
     ESCALATION_CONFLICT_THRESHOLD,
     VISION_ENABLED,
+    CODER_MODEL_NAME,
+    REVIEWER_MODEL_NAME,
+    JUDGE_MODEL_NAME,
+    JUDGE_ENABLED,
+    STUDY_MODEL_NAME,
+    VISION_MODEL_NAME,
 )
 from dashboard import render_dashboard
 from vision_pipeline import run_vision
@@ -337,6 +343,12 @@ def generate_code(req: CodeRequest):
                 "parse_error": judge_result.get("parse_error") if judge_result else None,
             },
             "risk": risk_info,
+            # New: model-used telemetry
+            "models": {
+                "coder": CODER_MODEL_NAME,
+                "reviewer": REVIEWER_MODEL_NAME,
+                "judge": JUDGE_MODEL_NAME if JUDGE_ENABLED else None,
+            },
         }
     )
 
@@ -377,6 +389,10 @@ def study(req: StudyRequest):
             "escalated": False,
             "escalation_reason": "",
             "judge": None,
+            # New: model-used telemetry
+            "models": {
+                "study": STUDY_MODEL_NAME,
+            },
         }
     )
 
@@ -417,7 +433,6 @@ async def vision_endpoint(
         image_bytes=image_bytes,
         user_prompt=prompt or "",
         mode=mode or "auto",
-    
     )
 
     # Log to history for dashboard
@@ -432,6 +447,10 @@ async def vision_endpoint(
             "escalated": False,
             "escalation_reason": "",
             "judge": None,
+            # New: model-used telemetry
+            "models": {
+                "vision": VISION_MODEL_NAME,
+            },
         }
     )
 
@@ -504,4 +523,3 @@ def root():
     Root → redirect to chat UI.
     """
     return chat_page()
-

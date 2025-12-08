@@ -1,604 +1,390 @@
-from typing import Any, Dict, List
-from html import escape
+"""
+dashboard.py
 
-from fastapi.responses import HTMLResponse
+Simple HTML dashboard for inspecting recent history records.
+
+- Used by /dashboard endpoint via code_server.render_dashboard()
+- Reads records from history.load_recent_records(limit=N)
+- Renders as a single static HTML page (no external assets)
+
+V3.4.x additions:
+- Shows model-used telemetry from the "models" field.
+- Adds client-side filters:
+    - by mode
+    - by model (from chat_model_used + models dict)
+    - free-text search over prompt/output/judge/risk
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Set
+from html import escape
 
 from history import load_recent_records
 
 
-def _score_label(value: Any) -> str:
-    if value is None:
-        return "-"
-    try:
-        return str(int(value))
-    except Exception:
-        return escape(str(value))
+def _safe(val: Any) -> str:
+    if val is None:
+        return ""
+    return escape(str(val))
 
 
-def _escalation_label(escalated: bool, mode: str) -> str:
-    mode = mode or ""
-    if mode.startswith("study"):
-        return "Study"
-    if mode == "chat":
-        return "Chat"
-    if escalated:
-        return "Yes"
-    return "No"
+def _shorten(text: Any, limit: int = 240) -> str:
+    if text is None:
+        return ""
+    s = str(text)
+    if len(s) <= limit:
+        return s
+    return s[: limit - 3] + "..."
 
 
-def _truncate(text: str, limit: int = 120) -> str:
-    text = text or ""
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "…"
+def _collect_mode_and_models(records: List[Dict[str, Any]]) -> (List[str], List[str]):
+    modes: Set[str] = set()
+    models: Set[str] = set()
+
+    for r in records:
+        mode = r.get("mode")
+        if mode:
+            modes.add(str(mode))
+
+        chat_model = r.get("chat_model_used")
+        if chat_model:
+            models.add(str(chat_model))
+
+        m_dict = r.get("models") or {}
+        if isinstance(m_dict, dict):
+            for v in m_dict.values():
+                if v:
+                    models.add(str(v))
+
+    mode_list = sorted(modes)
+    model_list = sorted(models)
+    return mode_list, model_list
 
 
-def _build_rows_html(
-    records: List[Dict[str, Any]],
-    row_prefix: str,
-    empty_message: str,
-) -> str:
-    rows_html: List[str] = []
-
-    # newest first
-    records = list(reversed(records))
-
-    for idx, rec in enumerate(records):
-        rec_id = f"{row_prefix}-{idx}"
-        ts = escape(str(rec.get("ts", "")))
-        mode = str(rec.get("mode", "") or "")
-        mode_safe = escape(mode)
-
-        prompt = rec.get("normalized_prompt") or rec.get("original_prompt") or ""
-        final_output = rec.get("final_output") or ""
-        coder_output = rec.get("coder_output") or ""
-        reviewer_output = rec.get("reviewer_output") or ""
-        escalated = bool(rec.get("escalated"))
-        escalation_reason = rec.get("escalation_reason") or ""
-
-        judge = rec.get("judge")
-        if isinstance(judge, dict):
-            confidence = judge.get("confidence_score")
-            conflict = judge.get("conflict_score")
-            raw_summary = judge.get("judgement_summary")
-            j_raw = judge.get("raw_response")
-            j_err = judge.get("parse_error")
-        else:
-            confidence = None
-            conflict = None
-            raw_summary = ""
-            j_raw = ""
-            j_err = ""
-
-        # --- Risk info (top-level, for code/study/chat) ---
-        risk = rec.get("risk") if isinstance(rec.get("risk"), dict) else None
-        risk_level = risk.get("risk_level") if risk else None
-        risk_tags = risk.get("tags") if risk else None
-        risk_reasons = risk.get("reasons") if risk else None
-        risk_kind = risk.get("kind") if risk else None
-
-        # --- Tool risk (inside tool_record, e.g. mode == tool_execution) ---
-        tool_record = rec.get("tool_record") if isinstance(rec.get("tool_record"), dict) else None
-        tool_risk = tool_record.get("risk") if (tool_record and isinstance(tool_record.get("risk"), dict)) else None
-        tool_risk_level = tool_risk.get("risk_level") if tool_risk else None
-        tool_risk_tags = tool_risk.get("tags") if tool_risk else None
-        tool_risk_reasons = tool_risk.get("reasons") if tool_risk else None
-        tool_risk_kind = tool_risk.get("kind") if tool_risk else None
-
-        # Force everything to safe strings
-        prompt_str = str(prompt or "")
-        final_str = str(final_output or "")
-        coder_str = str(coder_output or "")
-        reviewer_str = str(reviewer_output or "")
-        j_summary = str(raw_summary or "")
-        j_raw_str = str(j_raw or "")
-        j_err_str = str(j_err or "")
-        esc_reason_str = str(escalation_reason or "")
-
-        prompt_preview = escape(_truncate(prompt_str.replace("\n", " "), 120))
-        final_preview = escape(_truncate(final_str.replace("\n", " "), 120))
-        j_summary_safe = escape(_truncate(j_summary.replace("\n", " "), 120))
-
-        if mode.startswith("study") or mode == "chat":
-            conf_label = "-"
-            confct_label = "-"
-        else:
-            conf_label = _score_label(confidence)
-            confct_label = _score_label(conflict)
-
-        # Risk cell: prefer top-level risk; fallback to tool_risk; else "-"
-        if risk_level is not None:
-            risk_label = _score_label(risk_level)
-        elif tool_risk_level is not None:
-            risk_label = _score_label(tool_risk_level)
-        else:
-            risk_label = "-"
-
-        esc_label = _escalation_label(escalated, mode)
-
-        coder_escaped = escape(coder_str)
-        reviewer_escaped = escape(reviewer_str)
-        final_escaped = escape(final_str)
-        j_raw_escaped = escape(j_raw_str)
-        j_err_escaped = escape(j_err_str)
-        esc_reason_escaped = escape(esc_reason_str)
-
-        # --- Render risk as compact text blocks for details view ---
-        if risk_level is not None or risk_tags or risk_reasons:
-            risk_block = (
-                f"risk_kind: {escape(str(risk_kind or 'code'))}\n"
-                f"risk_level: {escape(str(risk_level))}\n"
-                f"risk_tags: {escape(str(risk_tags))}\n"
-                f"risk_reasons: {escape(str(risk_reasons or ''))}\n"
-            )
-        else:
-            risk_block = "risk: (no risk info for this record)\n"
-
-        if tool_risk_level is not None or tool_risk_tags or tool_risk_reasons:
-            tool_risk_block = (
-                f"tool_risk_kind: {escape(str(tool_risk_kind or 'tool'))}\n"
-                f"tool_risk_level: {escape(str(tool_risk_level))}\n"
-                f"tool_risk_tags: {escape(str(tool_risk_tags))}\n"
-                f"tool_risk_reasons: {escape(str(tool_risk_reasons or ''))}\n"
-            )
-        else:
-            tool_risk_block = ""
-
-        row = f"""
-<tr onclick="toggleDetails('{rec_id}')" class="main-row">
-  <td>{ts}</td>
-  <td>{mode_safe}</td>
-  <td>{esc_label}</td>
-  <td>{prompt_preview}</td>
-  <td>{final_preview}</td>
-  <td>{conf_label}</td>
-  <td>{confct_label}</td>
-  <td>{risk_label}</td>
-  <td>{j_summary_safe}</td>
-</tr>
-<tr id="{rec_id}" class="details-row">
-  <td colspan="9">
-    <div class="details">
-      <div class="block">
-        <h3>Prompt</h3>
-        <pre>{escape(prompt_str)}</pre>
-      </div>
-      <div class="block">
-        <h3>Coder Output</h3>
-        <pre>{coder_escaped}</pre>
-      </div>
-      <div class="block">
-        <h3>Reviewer / Final Output</h3>
-        <pre>{reviewer_escaped or final_escaped}</pre>
-      </div>
-      <div class="block">
-        <h3>Judge / Study Meta</h3>
-        <pre>mode: {mode_safe}
-escalated: {str(escalated)}
-escalation_reason: {esc_reason_escaped}
-
-confidence_score: {escape(str(confidence))}
-conflict_score: {escape(str(conflict))}
-judgement_summary: {escape(j_summary)}
-
-raw_response:
-{j_raw_escaped}
-
-parse_error:
-{j_err_escaped}
-
-{risk_block}{tool_risk_block}</pre>
-      </div>
-    </div>
-  </td>
-</tr>
-"""
-        rows_html.append(row)
-
-    if not rows_html:
-        return f"""
-<tr>
-  <td colspan="9" style="text-align:center; padding: 24px; color: #9ca3af;">
-    {empty_message}
-  </td>
-</tr>
-"""
-
-    return "\n".join(rows_html)
-
-
-def _build_timing_rows_html(
-    records: List[Dict[str, Any]],
-    row_prefix: str,
-    empty_message: str,
-) -> str:
-    """
-    Build rows for system performance timings (pipeline_timing, tool_timing).
-    """
-    rows_html: List[str] = []
-
-    # newest first
-    records = list(reversed(records))
-
-    for idx, rec in enumerate(records):
-        rec_id = f"{row_prefix}-{idx}"
-        ts = escape(str(rec.get("ts", "")))
-        kind = str(rec.get("kind", "") or "")
-        status = str(rec.get("status", "") or "")
-        duration = rec.get("duration_s")
-        error = str(rec.get("error", "") or "")
-
-        if kind == "pipeline_timing":
-            stage = str(rec.get("stage", "") or "")
-            target = str(rec.get("model", "") or "")
-            type_label = stage or "pipeline"
-        elif kind == "tool_timing":
-            stage = "tool"
-            target = str(rec.get("tool", "") or "")
-            type_label = "tool"
-        else:
-            # Not a timing record we recognize; skip
-            continue
-
-        type_safe = escape(type_label)
-        target_safe = escape(target)
-        status_safe = escape(status or "-")
-        duration_label = "-" if duration is None else f"{float(duration):.3f}"
-        duration_safe = escape(duration_label)
-        error_preview = escape(_truncate(error.replace("\n", " "), 100))
-        error_full = escape(error)
-
-        row = f"""
-<tr onclick="toggleDetails('{rec_id}')" class="main-row">
-  <td>{ts}</td>
-  <td>{type_safe}</td>
-  <td>{target_safe}</td>
-  <td>{duration_safe}</td>
-  <td>{status_safe}</td>
-  <td>{error_preview}</td>
-</tr>
-<tr id="{rec_id}" class="details-row">
-  <td colspan="6">
-    <div class="details">
-      <div class="block">
-        <h3>Timing Record</h3>
-        <pre>kind: {escape(kind)}
-type: {type_safe}
-target: {target_safe}
-status: {status_safe}
-duration_s: {duration_safe}
-
-error:
-{error_full}</pre>
-      </div>
-    </div>
-  </td>
-</tr>
-"""
-        rows_html.append(row)
-
-    if not rows_html:
-        return f"""
-<tr>
-  <td colspan="6" style="text-align:center; padding: 24px; color: #9ca3af;">
-    {empty_message}
-  </td>
-</tr>
-"""
-
-    return "\n".join(rows_html)
-
-
-def render_dashboard(limit: int = 50) -> HTMLResponse:
-    """
-    Build and return the dashboard HTML as an HTMLResponse.
-    Main board: code + study.
-    Chat board: only mode == "chat".
-    Performance board: timing entries from pipeline/tools.
-    """
+def render_dashboard(limit: int = 50) -> str:
     records = load_recent_records(limit=limit)
+    modes, models = _collect_mode_and_models(records)
 
-    main_records: List[Dict[str, Any]] = []
-    chat_records: List[Dict[str, Any]] = []
-    timing_records: List[Dict[str, Any]] = []
+    # Build <option> lists for filters
+    mode_options_html = '<option value="">(all modes)</option>'
+    for m in modes:
+        mode_options_html += f'<option value="{escape(m)}">{escape(m)}</option>'
 
-    for rec in records:
-        kind = str(rec.get("kind", "") or "")
-        if kind in ("pipeline_timing", "tool_timing"):
-            timing_records.append(rec)
-            continue
+    model_options_html = '<option value="">(all models)</option>'
+    for m in models:
+        model_options_html += f'<option value="{escape(m)}">{escape(m)}</option>'
 
-        mode = str(rec.get("mode", "") or "")
-        if mode == "chat":
-            chat_records.append(rec)
+    # Build table rows
+    rows_html_parts: List[str] = []
+
+    for idx, rec in enumerate(records):
+        ts = rec.get("ts") or rec.get("timestamp") or ""
+        mode = rec.get("mode") or ""
+        kind = rec.get("kind") or ""
+        original = _shorten(rec.get("original_prompt"))
+        final_output = _shorten(rec.get("final_output"))
+        chat_profile_name = rec.get("chat_profile_name") or rec.get("profile_name") or ""
+        chat_id = rec.get("chat_id") or ""
+        chat_model_used = rec.get("chat_model_used") or ""
+
+        judge = rec.get("judge") or {}
+        risk = rec.get("risk") or {}
+
+        judge_conf = ""
+        judge_conflict = ""
+        judge_summary = ""
+        if isinstance(judge, dict):
+            judge_conf = judge.get("confidence_score", "")
+            judge_conflict = judge.get("conflict_score", "")
+            judge_summary = _shorten(judge.get("judgement_summary"))
+
+        risk_level = ""
+        risk_tags = ""
+        risk_reasons = ""
+        if isinstance(risk, dict):
+            risk_level = risk.get("risk_level", "")
+            tags = risk.get("tags") or []
+            if isinstance(tags, list):
+                risk_tags = ", ".join(str(t) for t in tags)
+            risk_reasons = _shorten(risk.get("reasons"))
+
+        # Models dictionary
+        models_dict = rec.get("models") or {}
+        if isinstance(models_dict, dict):
+            models_text = ", ".join(
+                f"{k}:{v}" for k, v in models_dict.items() if v
+            )
         else:
-            main_records.append(rec)
+            models_text = ""
 
-    rows_main = _build_rows_html(
-        main_records,
-        row_prefix="main-rec",
-        empty_message="No code / study history yet. Make a request via /api/code or /api/study and refresh this page.",
-    )
-    rows_chat = _build_rows_html(
-        chat_records,
-        row_prefix="chat-rec",
-        empty_message="No chat history yet. Open /chat and send a message.",
-    )
-    rows_timing = _build_timing_rows_html(
-        timing_records,
-        row_prefix="timing-rec",
-        empty_message="No performance timings yet. Trigger /api/code, /api/vision, or tools to see activity.",
-    )
+        # Data attributes for filtering
+        data_mode = escape(str(mode))
+        data_model = escape(str(chat_model_used))
+        data_models = escape(models_text)
 
-    html = f"""
-<!DOCTYPE html>
+        row_html = f"""
+        <tr
+          data-mode="{data_mode}"
+          data-model="{data_model}"
+          data-models="{data_models}"
+        >
+          <td>{_safe(ts)}</td>
+          <td>{_safe(mode)}</td>
+          <td>{_safe(kind)}</td>
+          <td>{_safe(chat_profile_name)}</td>
+          <td>{_safe(chat_id)}</td>
+          <td>{_safe(chat_model_used)}</td>
+          <td>{_safe(models_text)}</td>
+          <td class="mono">{_safe(original)}</td>
+          <td class="mono">{_safe(final_output)}</td>
+          <td>{_safe(judge_conf)}</td>
+          <td>{_safe(judge_conflict)}</td>
+          <td class="mono">{_safe(judge_summary)}</td>
+          <td>{_safe(risk_level)}</td>
+          <td class="mono">{_safe(risk_tags)}</td>
+          <td class="mono">{_safe(risk_reasons)}</td>
+        </tr>
+        """
+        rows_html_parts.append(row_html)
+
+    rows_html = "\n".join(rows_html_parts)
+
+    html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Local AI Trace Dashboard</title>
+  <meta charset="utf-8" />
+  <title>Local AI OS — Dashboard</title>
   <style>
-    :root {{
-      color-scheme: dark;
-    }}
     body {{
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       margin: 0;
       padding: 0;
-      background: radial-gradient(circle at top left, #020617 0, #020617 40%, #020617 100%);
-      color: #e5e7eb;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0b0c10;
+      color: #f5f5f5;
     }}
     header {{
-      padding: 14px 22px;
-      border-bottom: 1px solid #111827;
-      background: linear-gradient(90deg, #020617, #020617 40%, #020617 100%);
+      padding: 16px 24px;
+      border-bottom: 1px solid #20232a;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
     }}
     header h1 {{
       margin: 0;
-      font-size: 18px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #e5e7eb;
+      font-size: 20px;
+      font-weight: 600;
     }}
-    header p {{
-      margin: 4px 0 0;
-      font-size: 11px;
-      color: #9ca3af;
+    header .meta {{
+      font-size: 12px;
+      opacity: 0.7;
+      margin-left: auto;
     }}
     main {{
-      padding: 14px 20px 24px;
+      padding: 12px 16px 24px 16px;
+    }}
+    .filters {{
       display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }}
-    .section-title {{
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      color: #9ca3af;
-      margin-bottom: 6px;
-    }}
-    .meta {{
-      display: flex;
-      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
       align-items: center;
-      font-size: 11px;
-      color: #9ca3af;
-      margin-bottom: 8px;
     }}
-    .pill {{
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 10px;
-      border-radius: 999px;
-      border: 1px solid #1f2937;
-      background: #020617;
+    .filters label {{
+      font-size: 12px;
+      opacity: 0.85;
     }}
-    .dot {{
-      width: 8px;
-      height: 8px;
-      border-radius: 999px;
-      background: #22c55e;
-      box-shadow: 0 0 0 3px rgba(34,197,94,0.25);
+    select, input[type="text"] {{
+      background: #11141c;
+      border-radius: 6px;
+      border: 1px solid #2b2f3a;
+      color: #f5f5f5;
+      padding: 4px 8px;
+      font-size: 12px;
+      min-width: 120px;
+    }}
+    input[type="text"] {{
+      min-width: 220px;
     }}
     table {{
       width: 100%;
       border-collapse: collapse;
       font-size: 11px;
-      border-radius: 10px;
-      overflow: hidden;
-      border: 1px solid #111827;
-      background: #020617;
+      table-layout: fixed;
     }}
-    thead {{
-      background: #020617;
+    th, td {{
+      border-bottom: 1px solid #1c1f26;
+      padding: 6px 8px;
+      vertical-align: top;
+    }}
+    th {{
+      text-align: left;
+      background: #11141c;
       position: sticky;
       top: 0;
-      z-index: 5;
+      z-index: 1;
     }}
-    thead th {{
-      padding: 8px 10px;
-      text-align: left;
-      font-weight: 500;
-      color: #9ca3af;
-      border-bottom: 1px solid #111827;
-      background: rgba(2,6,23,0.95);
-      backdrop-filter: blur(4px);
+    tbody tr:nth-child(even) {{
+      background: #10131a;
     }}
-    tbody tr.main-row {{
-      cursor: pointer;
-      transition: background 0.12s ease, transform 0.08s ease;
+    tbody tr:nth-child(odd) {{
+      background: #0c0f15;
     }}
-    tbody tr.main-row:nth-child(4n+1) {{
-      background: rgba(15,23,42,0.62);
+    tbody tr:hover {{
+      background: #1b2230;
     }}
-    tbody tr.main-row:nth-child(4n+3) {{
-      background: rgba(15,23,42,0.45);
-    }}
-    tbody tr.main-row:hover {{
-      background: rgba(37,99,235,0.55);
-      transform: translateY(-1px);
-    }}
-    tbody td {{
-      padding: 7px 9px;
-      border-bottom: 1px solid #111827;
-      vertical-align: top;
-      max-width: 260px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }}
-    tr.details-row {{
-      display: none;
-      background: #020617;
-    }}
-    tr.details-row td {{
-      padding: 10px 12px 12px;
-      border-bottom: 1px solid #111827;
-    }}
-    .details {{
-      display: grid;
-      grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr);
-      gap: 10px;
-    }}
-    @media (max-width: 960px) {{
-      .details {{
-        grid-template-columns: minmax(0, 1fr);
-      }}
-    }}
-    .block {{
-      border-radius: 10px;
-      border: 1px solid #1f2937;
-      background: radial-gradient(circle at top left, rgba(15,23,42,0.8) 0, #020617 55%);
-      padding: 6px 8px 8px;
-    }}
-    .block h3 {{
-      margin: 0 0 4px;
-      font-size: 11px;
-      font-weight: 500;
-      color: #e5e7eb;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }}
-    .block pre {{
-      margin: 0;
-      padding: 6px 8px;
-      border-radius: 8px;
-      border: 1px solid #0f172a;
-      background: #020617;
-      font-size: 11px;
-      line-height: 1.4;
+    .mono {{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
       white-space: pre-wrap;
       word-wrap: break-word;
-      max-height: 260px;
-      overflow: auto;
+    }}
+    .pill {{
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid #333745;
+      font-size: 10px;
+      opacity: 0.85;
+    }}
+    .pill.mode {{
+      background: #151b28;
+    }}
+    .pill.model {{
+      background: #152820;
+    }}
+    .pill.risk-high {{
+      background: #3b1a1a;
+      border-color: #e57373;
+    }}
+    .pill.risk-medium {{
+      background: #332a13;
+      border-color: #ffb74d;
+    }}
+    .pill.risk-low {{
+      background: #12261b;
+      border-color: #81c784;
+    }}
+    .toolbar-note {{
+      font-size: 11px;
+      opacity: 0.7;
+      margin-left: 4px;
     }}
   </style>
 </head>
 <body>
   <header>
-    <h1>LOCAL AI TRACE</h1>
-    <p>PC brain &mdash; code &amp; study &mdash; LAN-only</p>
+    <h1>Local AI OS — Dashboard</h1>
+    <div class="meta">
+      Showing latest {len(records)} records · Limit = {limit}
+    </div>
   </header>
   <main>
-    <section>
-      <div class="section-title">CODE / STUDY PIPELINE</div>
-      <div class="meta">
-        <div class="pill">
-          <span class="dot"></span>
-          <span>Server online &bull; showing last {len(main_records)} interactions</span>
-        </div>
-        <div>Click any row to expand full details</div>
-      </div>
-      <table>
+    <div class="filters">
+      <label>
+        Mode:
+        <select id="modeFilter">
+          {mode_options_html}
+        </select>
+      </label>
+      <label>
+        Model:
+        <select id="modelFilter">
+          {model_options_html}
+        </select>
+      </label>
+      <label>
+        Search:
+        <input
+          type="text"
+          id="searchInput"
+          placeholder="Search prompt, output, judge, risk..."
+        />
+      </label>
+      <span class="toolbar-note">
+        Filters are client-side only (no extra load on backend).
+      </span>
+    </div>
+    <div style="overflow-x:auto; max-height: calc(100vh - 120px);">
+      <table id="recordsTable">
         <thead>
           <tr>
-            <th>Time</th>
-            <th>Mode</th>
-            <th>Esc / Type</th>
-            <th>Prompt (preview)</th>
-            <th>Final (preview)</th>
-            <th>Conf</th>
-            <th>Conflic</th>
-            <th>Risk</th>
-            <th>Judge summary</th>
+            <th style="width:120px;">Timestamp</th>
+            <th style="width:90px;">Mode</th>
+            <th style="width:70px;">Kind</th>
+            <th style="width:120px;">Profile</th>
+            <th style="width:80px;">Chat ID</th>
+            <th style="width:110px;">Chat Model</th>
+            <th style="width:150px;">Models (telemetry)</th>
+            <th style="width:260px;">Original Prompt</th>
+            <th style="width:260px;">Final Output</th>
+            <th style="width:60px;">Judge&nbsp;Conf</th>
+            <th style="width:60px;">Judge&nbsp;Conflicts</th>
+            <th style="width:220px;">Judge Summary</th>
+            <th style="width:70px;">Risk Level</th>
+            <th style="width:140px;">Risk Tags</th>
+            <th style="width:220px;">Risk Reasons</th>
           </tr>
         </thead>
         <tbody>
-          {rows_main}
+          {rows_html}
         </tbody>
       </table>
-    </section>
-
-    <section>
-      <div class="section-title" style="margin-top: 10px;">CHAT HISTORY</div>
-      <div class="meta" style="margin-bottom: 6px;">
-        <div style="font-size: 11px; color: #9ca3af;">
-          From /chat and /api/chat &bull; last {len(chat_records)} messages
-        </div>
-        <div style="font-size: 11px; color: #6b7280;">
-          Chat entries are kept separate from code / study.
-        </div>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>Mode</th>
-            <th>Type</th>
-            <th>Prompt (preview)</th>
-            <th>Final (preview)</th>
-            <th>Conf</th>
-            <th>Conflic</th>
-            <th>Risk</th>
-            <th>Judge summary</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows_chat}
-        </tbody>
-      </table>
-    </section>
-
-    <section>
-      <div class="section-title" style="margin-top: 12px;">SYSTEM PERFORMANCE</div>
-      <div class="meta" style="margin-bottom: 6px;">
-        <div style="font-size: 11px; color: #9ca3af;">
-          Timing from code, vision, and tools &bull; up to last {len(timing_records)} entries
-        </div>
-        <div style="font-size: 11px; color: #6b7280;">
-          Use this to spot slow models, timeouts, or failing tools.
-        </div>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>Type</th>
-            <th>Target</th>
-            <th>Duration (s)</th>
-            <th>Status</th>
-            <th>Error (preview)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows_timing}
-        </tbody>
-      </table>
-    </section>
+    </div>
   </main>
+
   <script>
-    function toggleDetails(id) {{
-      var row = document.getElementById(id);
-      if (!row) return;
-      if (row.style.display === "table-row") {{
-        row.style.display = "none";
-      }} else {{
-        row.style.display = "table-row";
+    (function() {{
+      const modeFilter = document.getElementById('modeFilter');
+      const modelFilter = document.getElementById('modelFilter');
+      const searchInput = document.getElementById('searchInput');
+      const table = document.getElementById('recordsTable');
+      const tbody = table.querySelector('tbody');
+
+      function normalize(s) {{
+        return (s || '').toString().toLowerCase();
       }}
-    }}
+
+      function applyFilters() {{
+        const modeValue = modeFilter.value;
+        const modelValue = modelFilter.value;
+        const searchValue = normalize(searchInput.value);
+
+        const rows = tbody.querySelectorAll('tr');
+        rows.forEach(row => {{
+          const rowMode = row.getAttribute('data-mode') || '';
+          const rowModel = row.getAttribute('data-model') || '';
+          const rowModels = row.getAttribute('data-models') || '';
+
+          let visible = true;
+
+          if (modeValue && rowMode !== modeValue) {{
+            visible = false;
+          }}
+
+          if (visible && modelValue) {{
+            if (rowModel !== modelValue && !rowModels.split(',').some(m => m.trim() === modelValue)) {{
+              visible = false;
+            }}
+          }}
+
+          if (visible && searchValue) {{
+            const text = normalize(row.textContent);
+            if (!text.includes(searchValue)) {{
+              visible = false;
+            }}
+          }}
+
+          row.style.display = visible ? '' : 'none';
+        }});
+      }}
+
+      modeFilter.addEventListener('change', applyFilters);
+      modelFilter.addEventListener('change', applyFilters);
+      searchInput.addEventListener('input', applyFilters);
+    }})();
   </script>
 </body>
 </html>
 """
-    return HTMLResponse(content=html)
+    return html

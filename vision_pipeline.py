@@ -1,24 +1,27 @@
+from __future__ import annotations
+
 """
+vision_pipeline.py
+
 Vision pipeline for the local AI assistant.
 
-- Wraps a vision-capable Ollama model (e.g. llava:7b)
-- Single entrypoint: run_vision(image_bytes, user_prompt, mode)
+- Wraps a vision-capable Ollama model (e.g. llava:7b).
+- Single entrypoint: run_vision(image_bytes, user_prompt, mode, model_name=None).
 
 Separated from main code pipeline so code/study/chat don't depend on it.
 
-HARDNING BASE · Phase 2/3:
+V3.4.x — HARDENING:
 - Uses OLLAMA_REQUEST_TIMEOUT_SECONDS for Ollama calls.
 - Limits concurrent vision calls with a simple semaphore.
 - Logs timing + status for each vision run via history_logger.
 - Input/output size guards with transparent truncation notes.
-- Stage-level timeout wrapper + graceful fallback on errors.
+- Stage-level timeout + retry wrapper via timeout_policy.run_with_retries.
 """
 
 import base64
-import threading
 import time
-from typing import Optional
-import concurrent.futures
+import threading
+from typing import Any, Dict, Optional
 
 import requests
 
@@ -30,65 +33,81 @@ from config import (
     MAX_CONCURRENT_HEAVY_REQUESTS,
 )
 from history import history_logger
+from timeout_policy import run_with_retries
 
 
 # =========================
-# Size guards (input / output)
+# Size guards
 # =========================
 
-# Vision prompts and outputs can be smaller than code, but we still guard them.
-_MAX_INPUT_CHARS_VISION = 4000
-_MAX_OUTPUT_CHARS_VISION = 8000
+MAX_VISION_PROMPT_CHARS = 4000
+MAX_VISION_OUTPUT_CHARS = 8000
+MAX_ERROR_CHARS = 600
 
 
-def _truncate_with_notice(text: str, limit: int, label: str) -> str:
+def _truncate_with_notice(text: Any, limit: int, label: str) -> str:
     """
-    Truncate text to `limit` characters and append a transparent note.
+    Truncate text to a given limit and add a small notice if it was cut.
 
-    label is a short identifier such as "Input" or "Output".
+    Used both for prompts (safety) and for errors (so logs stay reasonable).
     """
+    if text is None:
+        return ""
     if not isinstance(text, str):
-        text = str(text or "")
+        text = str(text)
+
     if len(text) <= limit:
         return text
-    head = text[:limit]
-    return head + f"\n\n[{label} truncated for safety — original content was too long.]"
+
+    head = text[: max(0, limit - 200)]
+    notice = f" [Truncated {label}: original length {len(text)} > {limit}]"
+    return head + notice
 
 
-def _sanitize_input_text(text: str) -> str:
-    """
-    Guardrail for incoming user text before building the vision prompt.
-    """
-    return _truncate_with_notice(text or "", _MAX_INPUT_CHARS_VISION, "Input")
+def _clamp_prompt(text: Any) -> str:
+    return _truncate_with_notice(text, MAX_VISION_PROMPT_CHARS, "prompt")
 
 
-def _clamp_output_text(text: str) -> str:
-    """
-    Guardrail for model outputs before returning to caller.
-    """
-    return _truncate_with_notice(text or "", _MAX_OUTPUT_CHARS_VISION, "Output")
+def _clamp_output_text(text: Any) -> str:
+    if text is None:
+        return ""
+    if not isinstance(text, str):
+        text = str(text)
+
+    if len(text) <= MAX_VISION_OUTPUT_CHARS:
+        return text
+
+    head = text[: max(0, MAX_VISION_OUTPUT_CHARS - 200)]
+    notice = (
+        "\n\n[Output truncated for safety — vision model attempted a very long answer. "
+        "Some details may be missing.]"
+    )
+    return head + notice
 
 
 # =========================
-# Concurrency guard
+# Concurrency + timing
 # =========================
 
-# Vision is considered a "heavy" operation similar to /api/code.
-# We use the same maximum as other heavy tasks, but this semaphore
-# is local to vision. (Global concurrency is still bounded by CPU/GPU.)
 _VISION_SEMAPHORE = threading.BoundedSemaphore(value=MAX_CONCURRENT_HEAVY_REQUESTS)
 
 
-def _log_timing(stage: str, model_name: str, duration_s: float, status: str, error: str | None = None) -> None:
+def _log_timing(model_name: str, duration_s: float, status: str, error: Optional[str] = None) -> None:
     """
-    Best-effort timing logger into history.
-    Failure here must never break the main flow.
+    Record a small timing record for dashboard.
+
+    kind: "pipeline_timing"
+      - stage: "vision"
+      - model: model name used
+      - duration_s: float seconds
+      - status: "ok" | "error" | "timeout"
+      - error: optional error string
     """
     try:
         history_logger.log(
             {
                 "kind": "pipeline_timing",
-                "stage": stage,
+                "stage": "vision",
                 "model": model_name,
                 "duration_s": round(float(duration_s), 3),
                 "status": status,
@@ -96,159 +115,163 @@ def _log_timing(stage: str, model_name: str, duration_s: float, status: str, err
             }
         )
     except Exception:
-        # Logging is best-effort only.
+        # timing logs must not break main flow
         pass
 
 
-def _run_with_timeout(fn, stage: str, model_name: str):
-    """
-    Stage-level timeout wrapper for vision.
-
-    Even though call_ollama_vision already uses an HTTP timeout, this
-    ensures the stage itself is bounded and cannot hang indefinitely
-    if something goes wrong beneath requests.
-    """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(fn)
-        return future.result(timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS)
-
-
-def call_ollama_vision(
-    image_bytes: bytes,
-    prompt: str,
-    model_name: Optional[str] = None,
+def _call_ollama_vision(
+    *,
+    image_b64: str,
+    user_prompt: str,
+    model_name: str,
+    mode: str,
 ) -> str:
     """
-    Low-level call to Ollama vision model.
+    Perform the actual HTTP POST to Ollama's /api/generate with image support.
 
-    Uses the /api/generate endpoint with an 'images' field
-    containing base64-encoded image data.
-
-    HARDNING BASE:
-    - Uses OLLAMA_REQUEST_TIMEOUT_SECONDS for HTTP timeout.
-    """
-    if not VISION_ENABLED:
-        return "Vision is disabled in config (VISION_ENABLED = False)."
-
-    if model_name is None:
-        model_name = VISION_MODEL_NAME
-
-    if not image_bytes:
-        return "(No image data provided to vision model.)"
-
-    img_b64 = base64.b64encode(image_bytes).decode("utf-8")
-
-    payload = {
+    We send:
+      {
         "model": model_name,
-        "prompt": prompt,
+        "prompt": prompt_text,
+        "images": [image_b64],
+        "stream": false
+      }
+
+    The prompt_text incorporates the mode (auto/describe/ocr/code/debug/...).
+    """
+    # Build mode-prefixed prompt
+    base_prompt = user_prompt or ""
+    mode = (mode or "auto").strip().lower()
+
+    if mode == "describe":
+        prefix = "You are a visual assistant. Briefly describe this image for a developer:\n\n"
+    elif mode == "ocr":
+        prefix = "Extract all readable text from this image. Return raw text only:\n\n"
+    elif mode == "code":
+        prefix = "You are helping with code/UI from a screenshot. Explain only the relevant technical details:\n\n"
+    elif mode == "debug":
+        prefix = "The user is debugging an issue. Carefully describe visible errors and clues from this image:\n\n"
+    else:
+        prefix = ""
+
+    prompt_text = prefix + base_prompt
+
+    url = f"{OLLAMA_URL}/api/generate"
+    payload: Dict[str, Any] = {
+        "model": model_name,
+        "prompt": prompt_text,
         "stream": False,
-        "images": [img_b64],
+        "images": [image_b64],
     }
 
-    resp = requests.post(OLLAMA_URL, json=payload, timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS)
+    resp = requests.post(
+        url,
+        json=payload,
+        timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS,
+    )
     resp.raise_for_status()
-    return (resp.json().get("response") or "").strip()
+    data = resp.json()
+    return data.get("response", "") or ""
 
+
+def _run_with_timeout(fn, model_name: str):
+    """
+    Wrap a vision call with timeout + retry semantics via timeout_policy.
+
+    - per-attempt timeout = OLLAMA_REQUEST_TIMEOUT_SECONDS
+    - max_retries = 1 (initial + 1 retry)
+    """
+    return run_with_retries(
+        fn=fn,
+        label="vision",
+        max_retries=1,
+        base_delay_s=1.0,
+        timeout_s=OLLAMA_REQUEST_TIMEOUT_SECONDS,
+        timing_cb=None,
+        is_retryable_error=None,
+    )
+
+
+# =========================
+# Public entrypoint
+# =========================
 
 def run_vision(
     image_bytes: bytes,
-    user_prompt: str,
+    user_prompt: str = "",
     mode: str = "auto",
     model_name: Optional[str] = None,
 ) -> str:
     """
-    High-level vision entrypoint.
+    Main vision entrypoint for the rest of the system.
 
     Parameters:
-      image_bytes: raw bytes of the uploaded image
-      user_prompt: user's instruction (may be empty)
-      mode: one of "auto", "describe", "ocr", "code", "debug"
-      model_name: optional override
+      image_bytes:
+        Raw bytes of the image (PNG/JPEG/etc).
 
-    Output: plain text only (no markdown fences).
+      user_prompt:
+        Optional text from the user. May be empty.
 
-    HARDNING BASE:
-    - Protected by a semaphore for concurrency control.
-    - Timing + status logged to history.
-    - Stage-level timeout wrapper + input/output size guards.
-    - Graceful fallback on errors instead of raising.
+      mode:
+        High-level hint:
+          - "auto" (default)
+          - "describe"
+          - "ocr"
+          - "code"
+          - "debug"
+        Others are treated as "auto".
+
+      model_name:
+        Override model name. Defaults to VISION_MODEL_NAME.
+
+    Guardrails:
+      - If VISION_ENABLED is False, returns an explanatory string immediately.
+      - If no image data, returns a short message.
+      - Input prompt is clamped in length.
+      - Output text is clamped in length.
+      - Concurrency limited by _VISION_SEMAPHORE.
+      - HTTP timeout + retry via timeout_policy.
+      - timing logged via history_logger (pipeline_timing stage="vision").
     """
+    if not VISION_ENABLED:
+        return "Vision is disabled in config (VISION_ENABLED = False)."
+
+    effective_model = model_name or VISION_MODEL_NAME
+
     if not image_bytes:
-        return "(No image uploaded.)"
+        return "(No image data received.)"
 
-    mode = (mode or "auto").lower()
-    if mode not in ("auto", "describe", "ocr", "code", "debug"):
-        mode = "auto"
+    safe_prompt = _clamp_prompt(user_prompt)
 
-    base_instruction = """
-You are a visual AI assistant running locally.
-You can see one image and the user's text prompt.
+    # Prepare image as base64 for Ollama
+    try:
+        image_b64 = base64.b64encode(image_bytes).decode("ascii")
+    except Exception as e:
+        msg = _truncate_with_notice(f"Failed to base64-encode image: {e}", MAX_ERROR_CHARS, "Error")
+        return f"Vision pipeline error: {msg}"
 
-General rules:
-- Respond in plain text only. No markdown fences.
-- Be concise but clear.
-- If the user is a developer (logs, code, UI), focus on actionable insight.
-""".strip()
-
-    if mode == "describe":
-        task = "Describe the image in detail: structure, objects, relationships, notable features."
-    elif mode == "ocr":
-        task = "Extract all text from the image (OCR). Preserve line structure if possible."
-    elif mode == "code":
-        task = (
-            "Explain the image from a developer's viewpoint. If it shows code, UI, logs, or an error, "
-            "focus on what it means and how to fix or improve it."
-        )
-    elif mode == "debug":
-        task = (
-            "Diagnose problems shown in the image (errors, broken UI, logs). "
-            "Explain likely causes and concrete fixes."
-        )
-    else:  # auto
-        task = (
-            "Decide the best way to help based on the image and user prompt. "
-            "You may describe, extract text, or debug as appropriate."
-        )
-
-    uprompt = user_prompt.strip() if user_prompt else ""
-    if not uprompt:
-        uprompt = "Describe this image in detail."
-    uprompt = _sanitize_input_text(uprompt)
-
-    final_prompt = f"""
-{base_instruction}
-
-Task mode: {mode}
-Task description: {task}
-
-User prompt:
-{uprompt}
-""".strip()
-
-    # Timing + concurrency guard around the actual model call
     start = time.monotonic()
     status = "ok"
-    error_msg: str | None = None
-    effective_model = model_name or VISION_MODEL_NAME
+    error_msg: Optional[str] = None
 
     _VISION_SEMAPHORE.acquire()
     try:
         def _call():
-            return call_ollama_vision(
-                image_bytes=image_bytes,
-                prompt=final_prompt,
-                model_name=model_name,
+            return _call_ollama_vision(
+                image_b64=image_b64,
+                user_prompt=safe_prompt,
+                model_name=effective_model,
+                mode=mode or "auto",
             )
 
-        result = _run_with_timeout(_call, "vision", effective_model)
+        result = _run_with_timeout(_call, effective_model)
         return _clamp_output_text(result)
     except Exception as e:
         status = "error"
-        # Limit error length a bit before logging / returning
-        error_msg = _truncate_with_notice(str(e), 600, "Error")
+        error_msg = _truncate_with_notice(str(e), MAX_ERROR_CHARS, "Error")
         fallback = f"Vision stage failed: {error_msg}"
         return _clamp_output_text(fallback)
     finally:
         duration = time.monotonic() - start
-        _log_timing("vision", effective_model, duration, status, error_msg)
+        _log_timing(effective_model, duration, status, error_msg)
         _VISION_SEMAPHORE.release()

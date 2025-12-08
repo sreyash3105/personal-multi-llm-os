@@ -13,7 +13,7 @@ HARDNING BASE:
 """
 
 # Ollama HTTP endpoint
-OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+OLLAMA_URL = "http://127.0.0.1:11434"
 
 
 # ---- Model registry ----

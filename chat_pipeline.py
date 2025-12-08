@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 chat_pipeline.py
 
@@ -17,15 +19,16 @@ SMART CHAT (this file):
         - stage = "chat_smart"
         - stage = "chat_judge"
 
-Notes:
-- This module is additive and does not change core pipeline.py.
-- It is called from chat_ui.py when req.smart == True.
+V3.4.x additions:
+- Shared timeout + retry via timeout_policy.run_with_retries
+- Per-profile job queue integration via queue_manager:
+    - At most one smart-chat job runs per profile at a time.
+    - Additional requests for the same profile are queued FIFO.
 """
 
 import json
 import time
 import threading
-import concurrent.futures
 from typing import Any, Dict, List, Optional
 
 from config import (
@@ -36,6 +39,14 @@ from config import (
 from prompts import CHAT_SYSTEM_PROMPT
 from pipeline import call_ollama
 from history import history_logger
+from timeout_policy import run_with_retries
+from queue_manager import (
+    enqueue_job,
+    try_acquire_next_job,
+    get_job,
+    mark_job_done,
+    mark_job_failed,
+)
 
 
 # =========================
@@ -44,8 +55,18 @@ from history import history_logger
 
 _SMART_CHAT_SEMAPHORE = threading.BoundedSemaphore(value=MAX_CONCURRENT_HEAVY_REQUESTS)
 
+# Simple, chat-specific retry policy (can be moved to config later)
+_CHAT_MAX_RETRIES = 1           # total attempts = 2 (initial + 1 retry)
+_CHAT_RETRY_BASE_DELAY_S = 1.0  # seconds
 
-def _log_chat_timing(stage: str, model_name: str, duration_s: float, status: str, error: Optional[str] = None) -> None:
+
+def _log_chat_timing(
+    stage: str,
+    model_name: str,
+    duration_s: float,
+    status: str,
+    error: Optional[str] = None,
+) -> None:
     """
     Best-effort timing logger for smart-chat stages.
     Shows up in the dashboard as 'pipeline_timing'.
@@ -68,14 +89,35 @@ def _log_chat_timing(stage: str, model_name: str, duration_s: float, status: str
 
 def _run_with_timeout(fn, stage: str, model_name: str):
     """
-    Stage-level timeout wrapper for planner / answer / judge.
+    Stage-level timeout + retry wrapper for planner / answer / judge.
 
-    Even though call_ollama has an HTTP timeout, this prevents a stage
-    from hanging indefinitely if something goes wrong below requests.
+    Uses the shared timeout_policy.run_with_retries helper to ensure:
+    - per-attempt timeout (OLLAMA_REQUEST_TIMEOUT_SECONDS)
+    - bounded retries with simple backoff
+    - no behaviour change beyond "best-effort retry on transient failure".
     """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(fn)
-        return future.result(timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS)
+    start = time.monotonic()
+    status = "ok"
+    error_text: Optional[str] = None
+
+    try:
+        result = run_with_retries(
+            fn=fn,
+            label=stage,
+            max_retries=_CHAT_MAX_RETRIES,
+            base_delay_s=_CHAT_RETRY_BASE_DELAY_S,
+            timeout_s=OLLAMA_REQUEST_TIMEOUT_SECONDS,
+            timing_cb=None,          # chat logs aggregate timing itself
+            is_retryable_error=None, # use default heuristic
+        )
+        return result
+    except Exception as exc:
+        status = "error"
+        error_text = str(exc) or exc.__class__.__name__
+        raise
+    finally:
+        duration = time.monotonic() - start
+        _log_chat_timing(stage, model_name, duration, status, error_text)
 
 
 # =========================
@@ -183,10 +225,6 @@ JSON:
     conflict_score: Optional[int] = None
     summary = ""
 
-    start = time.monotonic()
-    status = "ok"
-    error_msg: Optional[str] = None
-
     try:
         def _call():
             return call_ollama(judge_prompt, model_name).strip()
@@ -207,12 +245,7 @@ JSON:
         summary = str(data.get("judgement_summary") or "").strip()
 
     except Exception as e:
-        status = "error"
-        error_msg = str(e)
         parse_error = str(e)
-    finally:
-        duration = time.monotonic() - start
-        _log_chat_timing("chat_judge", model_name, duration, status, error_msg)
 
     return {
         "confidence_score": confidence_score,
@@ -249,6 +282,11 @@ def run_chat_smart(
     context_block:
         Optional profile-aware context string (e.g. from profile_kb.build_profile_context),
         already constructed by the caller (chat_ui).
+
+    V3.4.x queue integration:
+        - Each call enqueues a "chat_smart" job for the given profile.
+        - Only one job per profile runs at a time; others wait until their job
+          is marked "running" in the queue.
     """
     model_name = SMART_CHAT_MODEL_NAME
     convo_block = _build_conversation_block(messages, user_prompt)
@@ -263,6 +301,51 @@ def run_chat_smart(
 
     answer_text = ""
     answer_error: Optional[str] = None
+
+    # ------------- Queue integration (per-profile) -------------
+    job = enqueue_job(
+        profile_id=profile_id,
+        kind="chat_smart",
+        meta={
+            "chat_id": chat_id,
+            "profile_name": profile_name,
+        },
+    )
+
+    acquired = try_acquire_next_job(profile_id)
+    if not acquired or acquired.id != job.id:
+        # Another job for this profile is active or ahead of us.
+        # Wait until THIS job becomes "running".
+        while True:
+            snapshot = get_job(job.id)
+            if snapshot is None:
+                # Job disappeared unexpectedly; abort with a generic error.
+                answer_text = "(This smart chat job was cancelled or lost in the queue.)"
+                answer_error = "queue_lost_job"
+                break
+            if snapshot.state == "running":
+                break
+            if snapshot.state in ("done", "failed", "cancelled"):
+                # Job was finished elsewhere; don't run it again.
+                answer_text = "(This smart chat job was already finished in another worker.)"
+                answer_error = "queue_job_already_finished"
+                break
+            time.sleep(0.05)
+
+    if answer_error in ("queue_lost_job", "queue_job_already_finished"):
+        try:
+            mark_job_failed(job.id, answer_error)
+        except Exception:
+            pass
+        judge_payload = _run_chat_judge(user_prompt=user_prompt, answer=answer_text, model_name=model_name)
+        return {
+            "answer": answer_text,
+            "plan": "",
+            "judge": judge_payload,
+            "model_used": model_name,
+            "planner_error": planner_error,
+            "answer_error": answer_error,
+        }
 
     # ------------- Planner + Answer (under semaphore) -------------
     _SMART_CHAT_SEMAPHORE.acquire()
@@ -312,8 +395,6 @@ JSON:
             user_prompt,
         )
 
-        start = time.monotonic()
-        planner_status = "ok"
         try:
             def _call_planner():
                 return call_ollama(planner_prompt, model_name).strip()
@@ -328,13 +409,8 @@ JSON:
             if notes_text:
                 plan_text = (plan_text + "\n\nNotes:\n" + notes_text).strip()
         except Exception as e:
-            planner_status = "error"
             planner_error = str(e)
-            # Fallback: treat raw text as a "plan-ish" hint
             plan_text = planner_raw or ""
-        finally:
-            duration = time.monotonic() - start
-            _log_chat_timing("chat_planner", model_name, duration, planner_status, planner_error)
 
         if not plan_text:
             plan_text = "No structured plan available. Respond as helpfully as possible."
@@ -380,18 +456,14 @@ ASSISTANT:
             plan_text,
         )
 
-        start = time.monotonic()
-        answer_status = "ok"
         try:
             def _call_answer():
                 return call_ollama(answer_prompt, model_name).strip()
 
             answer_text = _run_with_timeout(_call_answer, "chat_smart", model_name)
             if not answer_text:
-                answer_status = "error"
                 answer_error = "Empty answer from model."
         except Exception as e:
-            answer_status = "error"
             answer_error = str(e)
             # Last-resort fallback: simple prompt without plan/context
             fallback_prompt = """
@@ -419,20 +491,27 @@ ASSISTANT:
             except Exception:
                 if not answer_text:
                     answer_text = "(Smart chat failed to generate a response.)"
-        finally:
-            duration = time.monotonic() - start
-            _log_chat_timing("chat_smart", model_name, duration, answer_status, answer_error)
 
     finally:
         _SMART_CHAT_SEMAPHORE.release()
 
     # ------------- Judge stage (outside semaphore) -------------
-    judge_payload = _run_chat_judge(user_prompt, answer_text, model_name)
+    judge_payload = _run_chat_judge(user_prompt=user_prompt, answer=answer_text, model_name=model_name)
+
+    # Mark job done / failed in the queue (best-effort)
+    try:
+        if answer_error:
+            mark_job_failed(job.id, answer_error)
+        else:
+            mark_job_done(job.id, note="chat_smart completed")
+    except Exception:
+        pass
 
     return {
         "answer": answer_text,
         "plan": plan_text,
-        "planner_raw": planner_raw,
         "judge": judge_payload,
         "model_used": model_name,
+        "planner_error": planner_error,
+        "answer_error": answer_error,
     }
