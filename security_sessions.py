@@ -399,3 +399,89 @@ def cleanup_expired_sessions(max_rows: int = 500) -> int:
         conn.commit()
 
     return int(deleted)
+
+# ==========================================
+# SECURITY ENFORCEMENT EXTENSION (V3.6)
+# ==========================================
+
+from typing import Optional
+
+# Lookup strongest unexpired session for this scope (non-consuming)
+def sec_get_best_session_for_scope(*, profile_id: str, scope: str, required_level: int) -> Optional[dict]:
+    profile_id = (profile_id or "").strip()
+    scope = (scope or "").strip()
+    if not profile_id or not scope:
+        return None
+
+    now_str = datetime.utcnow().isoformat(timespec="seconds")
+    with _get_conn() as conn:
+        cur = conn.execute(
+            """
+            SELECT *
+            FROM security_sessions
+            WHERE profile_id = ?
+              AND scope = ?
+              AND auth_level >= ?
+              AND expires_at > ?
+              AND used_count < max_uses
+            ORDER BY auth_level DESC, expires_at ASC, id ASC
+            LIMIT 1
+            """,
+            (profile_id, scope, int(required_level), now_str),
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+# Unified check / consume helper for tools_runtime enforcement
+def sec_check_or_consume(
+    *,
+    profile_id: str,
+    scope: str,
+    required_level: int,
+    consume: bool = True,
+) -> Optional[dict]:
+    if consume:
+        return consume_security_session_if_allowed(
+            profile_id=profile_id,
+            scope=scope,
+            required_level=required_level,
+        )
+    return sec_get_best_session_for_scope(
+        profile_id=profile_id,
+        scope=scope,
+        required_level=required_level,
+    )
+
+
+# Wildcard authorization for global tool approval
+def sec_has_tool_wildcard(*, profile_id: str, required_level: int) -> bool:
+    profile_id = (profile_id or "").strip()
+    if not profile_id:
+        return False
+    now_str = datetime.utcnow().isoformat(timespec="seconds")
+    with _get_conn() as conn:
+        cur = conn.execute(
+            """
+            SELECT 1
+            FROM security_sessions
+            WHERE profile_id = ?
+              AND scope = 'tool:*'
+              AND auth_level >= ?
+              AND expires_at > ?
+              AND used_count < max_uses
+            LIMIT 1
+            """,
+            (profile_id, int(required_level), now_str),
+        )
+        return bool(cur.fetchone())
+# ==========================================
+# EXPORT ALIASES FOR BACKWARD COMPATIBILITY
+# ==========================================
+
+# legacy name expected by security_engine
+try:
+    get_best_session_for_scope = sec_get_best_session_for_scope
+except NameError:
+    # function not defined? (should never happen)
+    pass

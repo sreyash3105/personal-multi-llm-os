@@ -769,6 +769,30 @@
           <ul class="kb-list" id="kb-preview-list">
             <li class="kb-empty">Select a profile to view its saved notes.</li>
           </ul>
+
+          <!-- 🟢 KB search UI -->
+          <div class="kb-new" style="border-top: 1px solid #111827; margin-top: 4px; padding-top: 6px;">
+            <div class="kb-new-label">
+              <span>Search notes</span>
+              <span class="kb-hint">Find notes by keyword</span>
+            </div>
+            <div style="display:flex; gap:6px; margin-top:4px;">
+              <input
+                type="text"
+                id="kb-search-input"
+                class="kb-new-input"
+                placeholder="Search in notes..."
+              />
+              <button class="btn btn-ghost" id="kb-search-button" type="button">Search</button>
+            </div>
+            <ul
+              class="kb-list"
+              id="kb-search-results"
+              style="max-height:120px; margin-top:4px; border-top:1px solid #111827;"
+            ></ul>
+          </div>
+
+          <!-- Existing Quick KB note -->
           <div class="kb-new">
             <div class="kb-new-label">
               <span>Quick KB note</span>
@@ -781,6 +805,39 @@
               <span class="kb-hint">Tip: keep it short &amp; factual, or save the last answer.</span>
               <button class="btn btn-ghost" id="kb-save-last-answer">Save last answer</button>
               <button class="btn btn-primary" id="kb-save-note">Save to KB</button>
+            </div>
+          </div>
+
+          <!-- 🟢 Auto-note from chat → KB -->
+          <div class="kb-new" style="margin-top:6px;">
+            <div class="kb-new-label">
+              <span>Auto-note from chat</span>
+              <span class="kb-hint">Summarize recent messages into one note</span>
+            </div>
+            <input
+              type="text"
+              id="kb-auto-title"
+              class="kb-new-input"
+              placeholder="Optional title hint (e.g. 'API design decisions')"
+              style="margin-top:4px;"
+            />
+            <div style="display:flex; align-items:center; gap:6px; margin-top:4px;">
+              <span class="kb-hint">Max messages:</span>
+              <input
+                type="number"
+                id="kb-auto-max-messages"
+                class="kb-new-input"
+                value="80"
+                min="10"
+                max="200"
+                style="max-width:80px;"
+              />
+              <button class="btn btn-ghost" id="kb-auto-button" type="button">
+                Save recent as note
+              </button>
+            </div>
+            <div class="kb-hint" id="kb-auto-status" style="margin-top:4px;">
+              Uses /api/chat/profile_kb_auto
             </div>
           </div>
         </div>
@@ -820,6 +877,16 @@
     const kbContentInput = document.getElementById("kb-note-content");
     const kbSaveButton = document.getElementById("kb-save-note");
     const kbSaveLastButton = document.getElementById("kb-save-last-answer");
+
+    // 🟢 KB search + auto-note DOM refs
+    const kbSearchInput = document.getElementById("kb-search-input");
+    const kbSearchButton = document.getElementById("kb-search-button");
+    const kbSearchResults = document.getElementById("kb-search-results");
+
+    const kbAutoTitleInput = document.getElementById("kb-auto-title");
+    const kbAutoMaxMessagesInput = document.getElementById("kb-auto-max-messages");
+    const kbAutoButton = document.getElementById("kb-auto-button");
+    const kbAutoStatus = document.getElementById("kb-auto-status");
 
     const btnAddProfile = document.getElementById("btn-add-profile");
     const btnAddChat = document.getElementById("btn-add-chat");
@@ -1180,6 +1247,113 @@
       }
     }
 
+    // 🟢 Search KB notes
+    async function kbSearch() {
+      if (!kbSearchResults) return;
+
+      if (!currentProfileId) {
+        kbSearchResults.innerHTML =
+          '<li class="kb-empty">Select a profile first.</li>';
+        return;
+      }
+
+      const q = (kbSearchInput?.value || "").trim();
+      if (!q) {
+        kbSearchResults.innerHTML =
+          '<li class="kb-empty">Type a search query.</li>';
+        return;
+      }
+
+      kbSearchResults.innerHTML =
+        '<li class="kb-empty">Searching…</li>';
+
+      try {
+        const res = await apiGet(
+          `/api/chat/profile_kb_search?profile_id=${encodeURIComponent(
+            currentProfileId
+          )}&query=${encodeURIComponent(q)}&limit=20`
+        );
+        const snippets = res.snippets || [];
+        if (!snippets.length) {
+          kbSearchResults.innerHTML =
+            '<li class="kb-empty">No matches.</li>';
+          return;
+        }
+
+        kbSearchResults.innerHTML = "";
+        snippets.forEach((s) => {
+          const li = document.createElement("li");
+          li.className = "kb-item";
+
+          const title = document.createElement("div");
+          title.className = "kb-item-title";
+          title.textContent = s.title || `Note #${s.id}`;
+
+          const preview = document.createElement("div");
+          preview.className = "kb-item-preview";
+          preview.textContent = (s.preview || s.content || "").slice(0, 200);
+
+          li.appendChild(title);
+          li.appendChild(preview);
+          kbSearchResults.appendChild(li);
+        });
+      } catch (err) {
+        console.error("kbSearch", err);
+        kbSearchResults.innerHTML =
+          '<li class="kb-empty">Search failed.</li>';
+      }
+    }
+
+    // 🟢 Auto-generate KB note from recent chat
+    async function kbAutoNoteFromCurrentChat() {
+      if (!currentProfileId || !currentChatId) {
+        if (kbAutoStatus) {
+          kbAutoStatus.textContent =
+            "Select a profile and chat first.";
+        }
+        setStatus("Select profile & chat before auto-notes.", true);
+        return;
+      }
+
+      if (!kbAutoStatus || !kbAutoMaxMessagesInput) return;
+
+      const maxMessages = parseInt(
+        kbAutoMaxMessagesInput.value || "80",
+        10
+      );
+      const titleHintRaw = kbAutoTitleInput
+        ? kbAutoTitleInput.value
+        : "";
+      const titleHint = (titleHintRaw || "").trim() || null;
+
+      kbAutoStatus.textContent =
+        "Creating auto-note from recent messages…";
+
+      try {
+        const res = await apiJson("/api/chat/profile_kb_auto", "POST", {
+          profile_id: currentProfileId,
+          chat_id: currentChatId,
+          max_messages: maxMessages,
+          title_hint: titleHint,
+        });
+
+        if (res.ok === false) {
+          kbAutoStatus.textContent =
+            res.message || "Auto-note failed.";
+          return;
+        }
+
+        kbAutoStatus.textContent =
+          "KB note created: " +
+          (res.title || `#${res.note_id || ""}`.trim());
+        await loadKbPreview();
+      } catch (err) {
+        console.error("kbAutoNoteFromCurrentChat", err);
+        kbAutoStatus.textContent = "Auto-note failed.";
+        setStatus("Auto-note failed.", true);
+      }
+    }
+
     async function createKbNote(customTitle, customContent) {
       if (!currentProfileId) {
         setStatus("Select a profile before saving KB notes.", true);
@@ -1388,6 +1562,22 @@
       const title = `From chat: ${titleBase}`.slice(0, 80);
       createKbNote(title, lastAssistantText);
     });
+
+    // 🟢 KB search + auto-note wiring
+    if (kbSearchButton) {
+      kbSearchButton.addEventListener("click", kbSearch);
+    }
+    if (kbSearchInput) {
+      kbSearchInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          kbSearch();
+        }
+      });
+    }
+    if (kbAutoButton) {
+      kbAutoButton.addEventListener("click", kbAutoNoteFromCurrentChat);
+    }
 
     // Boot
     bootstrap().catch((err) => {

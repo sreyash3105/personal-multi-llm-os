@@ -381,3 +381,58 @@ class SecurityEngine:
 
         final_level = max(base_level, min_level)
         return final_level, policy_name, tags
+# ==========================================
+# SECURITY ENFORCEMENT SIGNALS (V3.6)
+# ==========================================
+# Non-blocking: nothing is stopped, no raise, no deny.
+# Only logs + returns event payload so dashboard and chat UI can react.
+
+from typing import Optional
+from security_sessions import get_best_session_for_scope
+
+def security_evaluate_operation(
+    *,
+    profile_id: str,
+    scope: str,
+    required_level: int,
+) -> dict:
+    """
+    Called by tools_runtime or pipeline to detect whether an operation
+    should trigger a security approval flow on the UI side.
+    Always returns a dict; NEVER throws.
+    """
+
+    # wildcard approval covers everything (tool:*)
+    wildcard = get_best_session_for_scope(
+        profile_id=profile_id,
+        scope="tool:*",
+        required_level=required_level,
+    )
+    if wildcard is not None:
+        return {
+            "approval_required": False,
+            "approved_scope": "tool:*",
+            "mode": "wildcard",
+        }
+
+    # scope-specific approval exists?
+    sess = get_best_session_for_scope(
+        profile_id=profile_id,
+        scope=scope,
+        required_level=required_level,
+    )
+    if sess is not None:
+        return {
+            "approval_required": False,
+            "approved_scope": scope,
+            "mode": "session",
+            "session_id": sess.get("id"),
+            "expires_at": sess.get("expires_at"),
+        }
+
+    # NO approval session present — UI should ask user
+    return {
+        "approval_required": True,
+        "scope": scope,
+        "required_level": required_level,
+    }

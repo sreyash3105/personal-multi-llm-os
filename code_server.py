@@ -40,6 +40,10 @@ app = FastAPI(title="Local Code, Study & Chat Assistant")
 # Mount chat router (provides /api/chat*, including vision-in-chat)
 app.include_router(chat_router)
 
+from dashboard import security_router
+app.include_router(security_router)
+
+
 
 # =========================
 # API models

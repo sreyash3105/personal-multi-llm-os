@@ -444,3 +444,35 @@ def render_dashboard(limit: int = 50) -> str:
 </html>
 """
     return html
+# ==========================================
+# SECURITY SESSIONS PANEL (V3.6)
+# ==========================================
+# Read-only endpoint — does not affect runtime or telemetry.
+
+from fastapi import APIRouter
+from security_sessions import get_active_sessions_for_profile
+
+security_router = APIRouter()
+
+@security_router.get("/api/dashboard/security_sessions")
+def dashboard_security_sessions(profile_id: str, include_expired: bool = False):
+    try:
+        sessions = get_active_sessions_for_profile(
+            profile_id,
+            include_expired=bool(include_expired),
+        )
+        return {
+            "ok": True,
+            "sessions": sessions,
+            "profile_id": profile_id,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e),
+            "profile_id": profile_id,
+        }
+
+# Do NOT reference `app` here. Just expose the router.
+# code_server.py will include: app.include_router(security_router)
+__all__ = ["security_router"]

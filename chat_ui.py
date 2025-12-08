@@ -5,11 +5,11 @@ Responsibilities:
 - Multi-profile, multi-chat text workspace
 - Main /api/chat endpoint (normal + smart chat)
 - Vision-in-chat endpoint
-- Tools-in-chat integration (///tool, ///tool+chat)
+- Tools in chat (///tool + args)
 - Simple profile/chat/messages CRUD for static/chat.html
-- Profile KB preview + note creation / deletion
+- Profile KB preview + note creation / deletion + search + auto-notes
 
-This module is "sacred" in V3.4.x — only incremental, low-risk edits allowed.
+This module is "sacred" in V3.x — only incremental, low-risk edits allowed.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from profile_kb import (
     add_snippet,
     delete_snippet,
     get_snippet,
+    search_snippets,
 )
 from tools_runtime import execute_tool
 from chat_pipeline import run_chat_smart
@@ -112,6 +113,22 @@ class KbNoteCreate(BaseModel):
     content: str
 
 
+class AutoKbNoteRequest(BaseModel):
+    """
+    Request payload for auto-generating a KB note from a single chat.
+
+    Fields:
+      - profile_id: profile whose chat we’re summarizing
+      - chat_id: chat id within that profile
+      - max_messages: how many recent messages to consider (10–200)
+      - title_hint: optional hint for the note title
+    """
+    profile_id: str
+    chat_id: str
+    max_messages: int = 80
+    title_hint: Optional[str] = None
+
+
 # =========================
 # Internal helpers
 # =========================
@@ -122,7 +139,8 @@ def _ensure_profile(profile_id: Optional[str]) -> Dict[str, Any]:
     Ensure a valid profile exists.
 
     - If profile_id is provided and exists, return it.
-    - If profile_id is missing or invalid, auto-create a "Default" profile.
+    - If profile_id is missing or invalid, auto-select first profile
+      or create a "Default" profile.
     """
     if profile_id:
         prof = get_profile(profile_id)
@@ -133,67 +151,84 @@ def _ensure_profile(profile_id: Optional[str]) -> Dict[str, Any]:
     if profiles:
         return profiles[0]
 
+    # Auto-create a default profile
     prof = create_profile(display_name="Default", model_override=None)
     return prof
 
 
 def _ensure_chat(profile_id: str, chat_id: Optional[str]) -> Dict[str, Any]:
     """
-    Ensure a valid chat exists for a profile.
+    Ensure there is a chat for the given profile.
 
     - If chat_id is provided and exists, return it.
-    - Else, create a new chat with a simple default name.
+    - Otherwise, create a new chat titled "New Chat".
     """
-    chats = list_chats(profile_id)
     if chat_id:
-        for c in chats:
-            if c.get("id") == chat_id:
-                return c
+        meta = get_chat(profile_id, chat_id)
+        if meta:
+            return meta
 
-    base_name = "Chat"
-    existing_names = [c.get("display_name") or "" for c in chats]
-    n = 1
-    while True:
-        candidate = f"{base_name} {n}"
-        if candidate not in existing_names:
-            break
-        n += 1
+    chats = list_chats(profile_id)
+    if chats:
+        return chats[0]
 
-    return create_chat(profile_id=profile_id, display_name=candidate, model_override=None)
+    chat_meta = create_chat(profile_id=profile_id, display_name="New Chat", model_override=None)
+    return chat_meta
 
 
 def _resolve_model(profile: Dict[str, Any], chat_meta: Dict[str, Any]) -> str:
     """
-    Decide which model to use based on chat + profile + config.
-    Precedence:
+    Resolve which model to use for this chat.
+
+    Priority:
       1) chat.model_override
       2) profile.model_override
-      3) CHAT_MODEL_NAME
+      3) CHAT_MODEL_NAME (global default)
     """
     chat_override = (chat_meta.get("model_override") or "").strip()
     if chat_override:
         return chat_override
 
-    profile_override = (profile.get("model_override") or "").strip()
-    if profile_override:
-        return profile_override
+    prof_override = (profile.get("model_override") or "").strip()
+    if prof_override:
+        return prof_override
 
     return CHAT_MODEL_NAME
 
 
 def _render_message_for_prompt(msg: Dict[str, Any]) -> str:
     """
-    Render stored messages into a simple text conversation block for prompts.
+    Render a stored message into a prompt line for the model.
     """
-    role = (msg.get("role") or "user").strip().lower()
+    role = (msg.get("role") or "user").upper()
     text = msg.get("text") or ""
+    ts = msg.get("ts") or ""
+    if ts:
+        return "%s %s: %s" % (ts, role, text)
+    return "%s: %s" % (role, text)
 
-    if text.startswith("__IMG__"):
-        parts = text.split("\n", 1)
-        rest = parts[1] if len(parts) > 1 else ""
-        return f"{role.upper()}: [IMAGE]\n{rest.strip()}"
 
-    return f"{role.upper()}: {text}"
+def _render_tool_result_text(tool_record: Dict[str, Any]) -> str:
+    """
+    Render a tool_record from tools_runtime.execute_tool into a short
+    human-readable snippet for chat.
+
+    This is used when the user runs ///tool in chat and wants to see
+    raw-ish results, but not full JSON.
+    """
+    name = tool_record.get("tool") or "unknown"
+    ok = bool(tool_record.get("ok"))
+    error = tool_record.get("error")
+    result = tool_record.get("result")
+
+    header = f"[tool:{name}] "
+
+    if not ok:
+        return header + f"FAILED: {error or 'unknown error'}"
+
+    # Clamp result for safety in chat
+    pretty_result = clamp_tool_output(result)
+    return header + f"OK\n{pretty_result}"
 
 
 def _maybe_handle_tool_command(
@@ -205,54 +240,58 @@ def _maybe_handle_tool_command(
     chat_id: str,
 ) -> Optional[Dict[str, Any]]:
     """
-    Inspect prompt for ///tool / ///tool+chat commands and handle them.
-    """
-    text = (prompt_text or "").strip()
+    Detect and handle ///tool and ///tool+chat commands inside chat.
 
-    if not text.startswith("///"):
+    Returns:
+      - dict with {output, profile_id, chat_id} if handled
+      - None if normal chat should proceed
+    """
+    if not TOOLS_IN_CHAT_ENABLED:
         return None
 
-    if not TOOLS_IN_CHAT_ENABLED:
-        return {
-            "output": "Tools-in-chat are currently disabled.",
-            "profile_id": profile_id,
-            "chat_id": chat_id,
-        }
+    text = (prompt_text or "").strip()
+    if not text.startswith("///tool"):
+        return None
 
     is_hybrid = False
-    cmd = None
-
-    if text.startswith("///tool+chat"):
+    first_line, *rest_lines = text.split("\n", 1)
+    if first_line.startswith("///tool+chat"):
         is_hybrid = True
-        cmd = "///tool+chat"
-    elif text.startswith("///tool"):
-        cmd = "///tool"
+        cmd_body = first_line[len("///tool+chat") :].strip()
+    else:
+        cmd_body = first_line[len("///tool") :].strip()
 
-    if cmd is None:
-        return None
-
-    rest = text[len(cmd) :].strip()
-    if not rest:
+    if not cmd_body:
         return {
-            "output": "Usage: ///tool TOOL_NAME {json_args} or ///tool+chat TOOL_NAME {json_args}",
+            "output": "[tools] Usage: ///tool TOOL_NAME {\"arg\": \"value\"} or ///tool+chat ...",
             "profile_id": profile_id,
             "chat_id": chat_id,
         }
 
-    parts = rest.split(None, 1)
-    tool_name = parts[0]
-    raw_args = parts[1] if len(parts) > 1 else "{}"
+    parts = cmd_body.split(" ", 1)
+    tool_name = parts[0].strip()
+    args_raw = parts[1].strip() if len(parts) > 1 else ""
 
-    try:
-        args = json.loads(raw_args)
-        if not isinstance(args, dict):
-            raise ValueError("Tool arguments must be a JSON object.")
-    except Exception as e:
+    if not tool_name:
         return {
-            "output": f"Failed to parse tool arguments as JSON: {e}",
+            "output": "[tools] Missing tool name after ///tool",
             "profile_id": profile_id,
             "chat_id": chat_id,
         }
+
+    if args_raw:
+        try:
+            tool_args = json.loads(args_raw)
+            if not isinstance(tool_args, dict):
+                raise ValueError("Tool args must be a JSON object")
+        except Exception as exc:
+            return {
+                "output": f"[tools] Failed to parse JSON args: {exc}",
+                "profile_id": profile_id,
+                "chat_id": chat_id,
+            }
+    else:
+        tool_args = {}
 
     context = {
         "source": "chat",
@@ -260,18 +299,36 @@ def _maybe_handle_tool_command(
         "chat_id": chat_id,
     }
 
-    record = execute_tool(tool_name, args, context)
-    raw_result = record.get("result")
-    error = record.get("error")
+    tool_record = execute_tool(tool_name, tool_args, context=context)
 
-    safe_tool_output = clamp_tool_output(raw_result) if error is None else None
+    # Log the tool call into history regardless of hybrid vs non-hybrid
+    safe_tool_output = clamp_tool_output(tool_record.get("result"))
+    history_logger.log(
+        {
+            "mode": "chat_tool_hybrid" if is_hybrid else "chat_tool",
+            "original_prompt": prompt_text,
+            "normalized_prompt": prompt_text,
+            "coder_output": None,
+            "reviewer_output": None,
+            "final_output": safe_tool_output,
+            "escalated": False,
+            "escalation_reason": "",
+            "judge": None,
+            "chat_profile_id": profile_id,
+            "chat_profile_name": profile.get("display_name"),
+            "chat_id": chat_id,
+            "chat_model_used": None,
+            "chat_smart_plan": None,
+            "models": {
+                "tool": tool_name,
+            },
+            "tool_record": tool_record,
+        }
+    )
 
-    if not TOOLS_CHAT_HYBRID_ENABLED or not is_hybrid:
-        if error:
-            output_text = f"[TOOL ERROR] {error}"
-        else:
-            output_text = f"[TOOL RESULT]\n{json.dumps(raw_result, indent=2, ensure_ascii=False)}"
-
+    if not is_hybrid or not TOOLS_CHAT_HYBRID_ENABLED:
+        # Simple mode: just show tool result inline
+        output_text = _render_tool_result_text(tool_record)
         append_message(profile_id, chat_id, "user", prompt_text)
         append_message(profile_id, chat_id, "assistant", output_text)
         return {
@@ -280,37 +337,46 @@ def _maybe_handle_tool_command(
             "chat_id": chat_id,
         }
 
-    if error:
-        tool_summary_prompt = (
-            "You are an assistant explaining a failed tool call.\n\n"
-            f"Tool name: {tool_name}\n"
-            f"Error: {error}\n\n"
-            "Explain in simple terms what went wrong and what the user can try."
-        )
-    else:
-        tool_summary_prompt = (
-            "You are an assistant summarizing the result of a local tool call "
-            "for a non-technical user.\n\n"
-            f"Tool name: {tool_name}\n"
-            f"Raw result (JSON):\n{json.dumps(raw_result, indent=2, ensure_ascii=False)}\n\n"
-            "Summarize the key points and suggest next steps."
-        )
+    # Hybrid: ask chat model to summarize tool_result for the user
+    from prompts import CHAT_SYSTEM_PROMPT
 
-    summary = call_ollama(tool_summary_prompt, SMART_CHAT_MODEL_NAME)
-    summary = clamp_chat_output(summary or "")
+    summary_prompt = """
+%s
+
+You are assisting inside a local developer tools workspace.
+
+A tool was just executed.
+
+Tool name: %s
+Tool call args (JSON): %s
+
+Tool record:
+%s
+
+Write a short, clear reply to the user explaining what happened,
+what the result means, and any next steps. Do NOT show raw JSON unless needed.
+""" % (
+        CHAT_SYSTEM_PROMPT,
+        tool_name,
+        json.dumps(tool_args, ensure_ascii=False),
+        json.dumps(tool_record, ensure_ascii=False),
+    )
+
+    summary_answer = call_ollama(summary_prompt, SMART_CHAT_MODEL_NAME)
+    summary_answer = clamp_chat_output(summary_answer or "")
 
     append_message(profile_id, chat_id, "user", prompt_text)
-    append_message(profile_id, chat_id, "assistant", summary)
+    append_message(profile_id, chat_id, "assistant", summary_answer)
 
     return {
-        "output": summary,
+        "output": summary_answer,
         "profile_id": profile_id,
         "chat_id": chat_id,
     }
 
 
 # =========================
-# Vision-in-chat endpoint
+# Vision-in-chat API
 # =========================
 
 
@@ -320,34 +386,46 @@ async def api_chat_vision(
     chat_id: Optional[str] = Form(None),
     prompt: str = Form(""),
     mode: str = Form("auto"),
-    file: UploadFile = File(...),
+    image: UploadFile = File(...),
 ):
+    """
+    Vision endpoint used by chat.html.
+
+    - Accepts an image + optional text prompt.
+    - Runs through vision_pipeline.run_vision.
+    - Appends both user + assistant messages to the chat history.
+    """
     if not VISION_ENABLED:
-        raise HTTPException(status_code=400, detail="Vision is disabled in config (VISION_ENABLED = False).")
+        raise HTTPException(status_code=400, detail="Vision is disabled in config.")
 
     profile = _ensure_profile(profile_id)
     profile_id = profile["id"]
-
     chat_meta = _ensure_chat(profile_id, chat_id)
     chat_id = chat_meta["id"]
-
-    image_bytes = await file.read()
-    if not image_bytes:
-        raise HTTPException(status_code=400, detail="No image data received.")
 
     raw_prompt = prompt or ""
     safe_prompt = sanitize_chat_input(raw_prompt)
 
-    vision_output = run_vision(
-        image_bytes=image_bytes,
-        user_prompt=safe_prompt,
-        mode=mode or "auto",
+    img_bytes = await image.read()
+    img_b64 = base64.b64encode(img_bytes).decode("ascii")
+
+    payload_text = safe_prompt
+    if payload_text:
+        payload_text += "\n\n"
+    payload_text += "[Attached image: %s bytes, content-type=%s]" % (
+        len(img_bytes),
+        image.content_type,
     )
 
-    b64 = base64.b64encode(image_bytes).decode("ascii")
-    mime = file.content_type or "image/png"
-    user_msg_text = safe_prompt.strip() if safe_prompt else "(no prompt)"
-    payload_text = "__IMG__%s|%s\n%s" % (mime, b64, user_msg_text)
+    vision_output = run_vision(
+        mode=mode,
+        prompt=safe_prompt,
+        image_b64=img_b64,
+        profile=profile,
+        profile_id=profile_id,
+        chat_meta=chat_meta,
+        chat_id=chat_id,
+    )
 
     append_message(profile_id, chat_id, "user", payload_text)
     vision_output = clamp_chat_output(vision_output)
@@ -595,9 +673,9 @@ def api_chat(req: ChatRequest):
             user_prompt=safe_prompt,
             context_block=context_block,
         )
-        answer = smart_result["answer"]
-        model_name_used = smart_result["model_used"]
+        answer = smart_result.get("answer") or ""
         judge_payload = smart_result.get("judge")
+        model_name_used = smart_result.get("model_used") or base_model_name
         smart_plan = smart_result.get("plan")
         mode_label = "chat_smart"
     else:
@@ -731,6 +809,162 @@ Your job:
 
 
 # =========================
+# Auto KB note from a single chat
+# =========================
+
+
+@router.post("/api/chat/profile_kb_auto")
+def api_profile_kb_auto(body: AutoKbNoteRequest):
+    """
+    Turn the recent messages of a single chat into a KB note (auto-notes).
+
+    This does NOT mutate chat; it only creates a new profile_snippets entry.
+    """
+    profile = get_profile(body.profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    chat_meta = get_chat(body.profile_id, body.chat_id)
+    if not chat_meta:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    # Clamp how many messages we read
+    try:
+        max_messages = int(body.max_messages or 80)
+    except Exception:
+        max_messages = 80
+    max_messages = max(10, min(max_messages, 200))
+
+    msgs = get_messages(body.profile_id, body.chat_id) or []
+    if not msgs:
+        return {
+            "ok": False,
+            "message": "This chat has no messages yet; nothing to save.",
+        }
+
+    recent = msgs[-max_messages:]
+    lines: List[str] = []
+    for m in recent:
+        ts = m.get("ts", "")
+        role = (m.get("role") or "user").upper()
+        text = m.get("text") or ""
+        lines.append("%s %s: %s" % (ts, role, text))
+
+    convo_block = "\n".join(lines)
+
+    system_prompt = """
+You are helping a developer turn a chat transcript into a reusable knowledge-base note.
+
+Transcript (most recent messages last) is provided below.
+
+Your job:
+1) Extract only durable facts, decisions, configs, and TODOs that will matter later.
+2) Ignore greetings, smalltalk, and dead-ends.
+3) Be concrete: include file names, endpoints, flags, commands, and important values when present.
+4) Output STRICT JSON ONLY with this shape:
+
+{
+  "title": "<short descriptive title>",
+  "content": "<2-8 bullet points or short paragraphs capturing the key decisions and facts>"
+}
+
+If there is clearly nothing useful to save, output:
+
+{
+  "title": "SKIP",
+  "content": ""
+}
+""".strip()
+
+    prompt = "%s\n\nTRANSCRIPT:\n%s" % (system_prompt, convo_block)
+    model_name = SMART_CHAT_MODEL_NAME
+
+    def _fallback(auto_mode: str, error_text: Optional[str]) -> Dict[str, Any]:
+        fallback_title = (body.title_hint or "").strip() or f"Auto note from chat {body.chat_id}"
+        fallback_content = "Auto-generated note from recent chat messages.\n\n" + convo_block
+        note_id = add_snippet(body.profile_id, fallback_title, fallback_content)
+        return {
+            "ok": True,
+            "profile_id": body.profile_id,
+            "chat_id": body.chat_id,
+            "note_id": note_id,
+            "title": fallback_title,
+            "content": fallback_content,
+            "model_used": model_name,
+            "auto_mode": auto_mode,
+            "error": error_text,
+        }
+
+    try:
+        raw = call_ollama(prompt, model_name) or ""
+    except Exception as e:
+        return _fallback(auto_mode="fallback_exception", error_text=str(e))
+
+    raw = str(raw).strip()
+    # Try to isolate the JSON object if model wrapped it in text
+    candidate = raw
+    if "{" in candidate and "}" in candidate:
+        candidate = candidate[candidate.find("{") : candidate.rfind("}") + 1]
+
+    try:
+        data = json.loads(candidate)
+    except Exception as e:
+        return _fallback(auto_mode="fallback_parse_error", error_text=str(e))
+
+    title = str(data.get("title") or "").strip()
+    content = str(data.get("content") or "").strip()
+
+    if title.upper() == "SKIP" or not content:
+        return {
+            "ok": False,
+            "message": "Model suggested skipping auto-note (no durable content detected).",
+            "model_used": model_name,
+        }
+
+    if not title:
+        title = (body.title_hint or "").strip() or f"Auto note from chat {body.chat_id}"
+
+    note_id = add_snippet(body.profile_id, title, content)
+    if not note_id:
+        return {
+            "ok": False,
+            "message": "Failed to create KB note.",
+            "model_used": model_name,
+        }
+
+    # Optional: emit a small history record so it shows up in the dashboard
+    try:
+        history_logger.log(
+            {
+                "mode": "profile_kb_auto_note",
+                "kind": "kb_note",
+                "chat_profile_id": body.profile_id,
+                "chat_id": body.chat_id,
+                "original_prompt": "(auto KB note from chat)",
+                "normalized_prompt": "",
+                "final_output": content,
+                "kb_note_id": note_id,
+                "kb_note_title": title,
+                "model_used": model_name,
+            }
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "message": f"Created KB note #{note_id} from chat {body.chat_id}.",
+        "profile_id": body.profile_id,
+        "chat_id": body.chat_id,
+        "note_id": note_id,
+        "title": title,
+        "content": content,
+        "model_used": model_name,
+        "auto_mode": "structured",
+    }
+
+
+# =========================
 # Profile KB preview + note APIs
 # =========================
 
@@ -803,4 +1037,38 @@ def api_profile_kb_delete(snippet_id: int):
         "ok": True,
         "profile_id": profile_id,
         "preview": preview,
+    }
+
+
+@router.get("/api/chat/profile_kb_search")
+def api_profile_kb_search(
+    profile_id: str = Query(..., description="Profile ID"),
+    query: str = Query(..., description="Search query string"),
+    limit: int = Query(20, ge=1, le=100, description="Max snippets to return"),
+):
+    """
+    Search KB notes for a profile by simple keyword query.
+
+    This is a lightweight wrapper around profile_kb.search_snippets.
+    It does NOT modify data; read-only and safe for UI search panels.
+    """
+    profile_id = (profile_id or "").strip()
+    if not profile_id:
+        raise HTTPException(status_code=400, detail="Missing profile_id")
+
+    prof = get_profile(profile_id)
+    if not prof:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    q = (query or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Missing query")
+
+    snippets = search_snippets(profile_id, q, limit=limit)
+
+    return {
+        "profile_id": profile_id,
+        "query": q,
+        "total": len(snippets),
+        "snippets": snippets,
     }

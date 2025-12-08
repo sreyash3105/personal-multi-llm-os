@@ -86,8 +86,7 @@ def add_snippet(profile_id: str, title: str, content: str) -> int:
             """
             INSERT INTO profile_snippets (profile_id, title, content, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?)
-            """
-            ,
+            """,
             (profile_id, title, content, now, now),
         )
         conn.commit()
@@ -109,8 +108,7 @@ def update_snippet(snippet_id: int, new_content: str) -> bool:
             UPDATE profile_snippets
             SET content = ?, updated_at = ?
             WHERE id = ?
-            """
-            ,
+            """,
             (new_content, now, snippet_id),
         )
         conn.commit()
@@ -147,8 +145,7 @@ def list_snippets(profile_id: str, limit: int = 20) -> List[Dict[str, Any]]:
             WHERE profile_id = ?
             ORDER BY updated_at DESC, id DESC
             LIMIT ?
-            """
-            ,
+            """,
             (profile_id, int(limit)),
         )
         rows = cur.fetchall()
@@ -168,6 +165,49 @@ def list_snippets(profile_id: str, limit: int = 20) -> List[Dict[str, Any]]:
     return out
 
 
+def search_snippets(profile_id: str, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+    """
+    Lightweight search over profile snippets.
+
+    Behaviour (V1, stable):
+    - If profile_id is empty -> return [].
+    - If query is empty/whitespace -> returns recent snippets (same as list_snippets, capped by limit).
+    - Otherwise:
+        - Fetch a slightly larger recent window.
+        - Do a simple keyword match over title + content.
+        - Return up to `limit` matching snippets (newest first).
+
+    This is intentionally simple and non-embedding-based for V3.6.x.
+    """
+    profile_id = (profile_id or "").strip()
+    if not profile_id:
+        return []
+
+    query = (query or "").strip().lower()
+    if not query:
+        # No query -> just recent snippets
+        return list_snippets(profile_id, limit=limit)
+
+    words = [w for w in query.replace(",", " ").split() if len(w) > 2]
+    if not words:
+        # Query only had tiny tokens; fall back to recent snippets
+        return list_snippets(profile_id, limit=limit)
+
+    # Fetch a slightly larger pool to filter from.
+    base = list_snippets(profile_id, limit=limit * 3)
+
+    if not base:
+        return []
+
+    filtered: List[Dict[str, Any]] = []
+    for s in base:
+        text = f"{s.get('title', '')} {s.get('content', '')}".lower()
+        if any(w in text for w in words):
+            filtered.append(s)
+
+    return filtered[:limit]
+
+
 def get_snippet(snippet_id: int) -> Optional[Dict[str, Any]]:
     """
     Fetch a single snippet by ID.
@@ -178,8 +218,7 @@ def get_snippet(snippet_id: int) -> Optional[Dict[str, Any]]:
             SELECT id, profile_id, title, content, created_at, updated_at
             FROM profile_snippets
             WHERE id = ?
-            """
-            ,
+            """,
             (int(snippet_id),),
         )
         row = cur.fetchone()

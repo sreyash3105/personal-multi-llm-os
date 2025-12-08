@@ -1,19 +1,22 @@
 """
-Tools Runtime (V3.0 skeleton)
+Tools Runtime (V3.x with HARDENING + Security wiring)
 
 Central registry + safe execution layer for local tools.
 
-Current status (V3.x with HARDNING BASE Phase 2):
+Current status:
 - Registry and execution helpers are defined.
 - A single demo "ping" tool is registered.
 - The runtime is controlled by feature flags in config.py:
     TOOLS_RUNTIME_ENABLED
     TOOLS_RUNTIME_LOGGING
-- Tool execution is:
+    TOOLS_MAX_RUNTIME_SECONDS
+
+Execution characteristics:
+- Each tool call is:
     - bounded by TOOLS_MAX_RUNTIME_SECONDS (per-call timeout)
     - measured and logged into history as timing entries
 
-V3.4.x — Risk tagging skeleton:
+V3.4.x — Risk tagging:
 - Each tool execution (and even failed/disabled lookups) is annotated with
   a best-effort risk assessment:
     record["risk"] = {
@@ -22,7 +25,6 @@ V3.4.x — Risk tagging skeleton:
       "reasons": "...",
       "kind": "tool",
     }
-- This is LOGGING ONLY (no blocking, no auth, no behavior change).
 
 V3.4.x — IO guards integration:
 - Tool results can be large; we now clamp ONLY the *logged* representation
@@ -40,8 +42,18 @@ V3.5 — Security engine wiring (Phase 1, non-blocking):
         "policy_name": str,
         "meta": Dict[str, Any],
     }
-- This is still LOGGING ONLY — no enforcement yet. The decision will be
-  used later by /api/security/auth and the chat UI to request approvals.
+- Originally this was LOGGING ONLY — no enforcement.
+  The decision is also used by /api/security/auth and the chat UI.
+
+V3.7 — Security enforcement (config-gated, tools-only):
+- Optional enforcement controlled by:
+    SECURITY_ENFORCEMENT_MODE   in {"off", "soft", "strict"}
+    SECURITY_MIN_ENFORCED_LEVEL (int, default 4)
+- New field:
+    record["requires_approval"]: bool
+  - Indicates to the UI that a prior approval is needed when in "soft" mode.
+- Default remains telemetry-only:
+    SECURITY_ENFORCEMENT_MODE = "off"  -> no behavior change.
 """
 
 from __future__ import annotations
@@ -51,11 +63,18 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, List, Set
 
-from config import TOOLS_RUNTIME_ENABLED, TOOLS_RUNTIME_LOGGING, TOOLS_MAX_RUNTIME_SECONDS
+from config import (
+    TOOLS_RUNTIME_ENABLED,
+    TOOLS_RUNTIME_LOGGING,
+    TOOLS_MAX_RUNTIME_SECONDS,
+    SECURITY_ENFORCEMENT_MODE,
+    SECURITY_MIN_ENFORCED_LEVEL,
+)
 from history import history_logger
 from risk import assess_risk
 from io_guards import clamp_tool_output  # shared output clamp for logging
 from security_engine import SecurityEngine, SecurityAuthLevel
+from security_sessions import consume_security_session_if_allowed
 
 
 @dataclass
@@ -260,6 +279,7 @@ def execute_tool(
              "policy_name": str,
              "meta": Dict[str, Any],
           },
+          "requires_approval": bool,
         }
 
     Behavior:
@@ -279,6 +299,13 @@ def execute_tool(
     V3.5 security wiring:
     - SecurityEngine is consulted for every call to compute a non-blocking
       auth decision stored under record["security"].
+
+    V3.7 security enforcement (config-gated):
+    - When SECURITY_ENFORCEMENT_MODE is "soft" or "strict" and
+      auth_level >= SECURITY_MIN_ENFORCED_LEVEL:
+        * "soft": require a prior approval session, otherwise return
+          error="security_approval_required" and requires_approval=True.
+        * "strict": return error="security_blocked" with no session bypass.
     """
     args = args or {}
 
@@ -300,9 +327,13 @@ def execute_tool(
             "kind": "tool",
         }
 
-    # ----- Security decision (also logging-only for now) -----
+    # ----- Security decision (telemetry + optional enforcement) -----
     security_info = _compute_security_decision(name, risk_info, context)
 
+    # Default: no approval required (overridden below if enforced)
+    requires_approval = False
+
+    # Fast path: runtime disabled → short-circuit (no enforcement)
     if not TOOLS_RUNTIME_ENABLED:
         record = {
             "ok": False,
@@ -315,6 +346,7 @@ def execute_tool(
             },
             "risk": risk_info,
             "security": security_info,
+            "requires_approval": requires_approval,
         }
         return record
 
@@ -331,9 +363,77 @@ def execute_tool(
             },
             "risk": risk_info,
             "security": security_info,
+            "requires_approval": requires_approval,
         }
         return record
 
+    # ----- Optional enforcement (config-controlled) -----
+    try:
+        auth_level = int(security_info.get("auth_level", 1))
+    except Exception:
+        auth_level = 1
+
+    if SECURITY_ENFORCEMENT_MODE in ("soft", "strict") and auth_level >= SECURITY_MIN_ENFORCED_LEVEL:
+        profile_id = ""
+        if isinstance(context, dict):
+            profile_id = (context.get("profile_id") or "").strip()
+
+        session_ok = False
+        if SECURITY_ENFORCEMENT_MODE == "soft" and profile_id:
+            try:
+                # Scope: specific tool; future: support "tool:*"
+                session_ok = consume_security_session_if_allowed(
+                    profile_id=profile_id,
+                    scope=f"tool:{name}",
+                    required_level=auth_level,
+                )
+            except Exception:
+                session_ok = False
+
+        # Decide whether to block
+        if SECURITY_ENFORCEMENT_MODE == "strict" or (SECURITY_ENFORCEMENT_MODE == "soft" and not session_ok):
+            error_msg = "security_approval_required" if SECURITY_ENFORCEMENT_MODE == "soft" else "security_blocked"
+            requires_approval = (SECURITY_ENFORCEMENT_MODE == "soft")
+
+            record = {
+                "ok": False,
+                "tool": name,
+                "result": None,
+                "error": error_msg,
+                "meta": {
+                    "args": args,
+                    "context_provided": context is not None,
+                },
+                "risk": risk_info,
+                "security": security_info,
+                "requires_approval": requires_approval,
+            }
+
+            # Log this as a tool_execution with no result
+            if TOOLS_RUNTIME_LOGGING:
+                try:
+                    logged_tool_record = dict(record)
+                    history_logger.log(
+                        {
+                            "mode": "tool_execution",
+                            "original_prompt": None,
+                            "normalized_prompt": None,
+                            "coder_output": None,
+                            "reviewer_output": None,
+                            "final_output": None,
+                            "escalated": False,
+                            "escalation_reason": "",
+                            "judge": None,
+                            "tool_record": logged_tool_record,
+                        }
+                    )
+                except Exception:
+                    # Logging must never break enforcement.
+                    pass
+
+            return record
+
+    # ----- Actual tool execution (if not blocked) -----
     result: Any = None
     error: Optional[str] = None
     status: str = "ok"
@@ -366,6 +466,7 @@ def execute_tool(
         },
         "risk": risk_info,
         "security": security_info,
+        "requires_approval": requires_approval,
     }
 
     # History / dashboard logging (bounded representation)
@@ -438,3 +539,61 @@ register_tool(
     },
     func=_ping_tool,
 )
+# ==========================================
+# SECURITY ENFORCEMENT EXTENSION (V3.6)
+# ==========================================
+#
+# This layer runs BEFORE executing a tool.
+# Uses security_sessions.py without importing anything new globally.
+# No interference with telemetry / dashboard / risk pipeline.
+#
+# If a tool requires approval and no active session exists:
+# return a soft rejection that frontend can convert to popup.
+
+from security_sessions import sec_check_or_consume, sec_has_tool_wildcard
+
+def security_gate_for_tool(
+    *,
+    profile_id: str,
+    tool_name: str,
+    required_level: int,
+    consume: bool = True,
+) -> dict:
+    """
+    Decide whether a tool is allowed to run.
+    Returns:
+        { "ok": True }                        → allowed
+        { "ok": False, "reason": "..."}       → block
+    """
+
+    scope = f"tool:{tool_name}"
+
+    # wildcard approval covers all tools (approved once for the profile)
+    if sec_has_tool_wildcard(profile_id=profile_id, required_level=required_level):
+        return { "ok": True, "scope": "tool:*", "mode": "wildcard" }
+
+    # scope-specific session (either peek or consume)
+    sess = sec_check_or_consume(
+        profile_id=profile_id,
+        scope=scope,
+        required_level=required_level,
+        consume=consume,
+    )
+
+    if sess is not None:
+        return {
+            "ok": True,
+            "scope": scope,
+            "mode": "session",
+            "session_id": sess.get("id"),
+            "remaining_uses": max(0, sess.get("max_uses", 1) - sess.get("used_count", 0)),
+            "expires_at": sess.get("expires_at")
+        }
+
+    # No session = block (soft mode)
+    return {
+        "ok": False,
+        "reason": "security_approval_required",
+        "scope": scope,
+        "required_level": required_level,
+    }

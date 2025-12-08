@@ -122,6 +122,53 @@ TOOLS_IN_CHAT_ENABLED = True
 #   2) Feed the tool result into the chat model
 #   3) Return a natural language summary instead of raw JSON.
 TOOLS_CHAT_HYBRID_ENABLED = True
+# ---- Security enforcement settings (V3.7) ----
+# Global mode for using SecurityEngine + sessions.
+#
+# "off"    -> current behavior (log-only, never block anything).
+# "soft"   -> high-risk operations can return "security_approval_required"
+#             instead of executing immediately. Caller/UX can then ask
+#             for approval and re-run with a valid security session.
+# "strict" -> reserved for future; can be used to hard-block without approval.
+SECURITY_ENFORCEMENT_MODE = "off"
+
+# Minimum auth level that triggers enforcement when mode != "off".
+# Auth levels from security_engine.SecurityAuthLevel: :contentReference[oaicite:1]{index=1}
+#   1 = ALLOW
+#   2 = LOG_ONLY
+#   3 = CONFIRM
+#   4 = CONFIRM_SENSITIVE
+#   5 = STRONG_VERIFY
+#   6 = BLOCK
+#
+# With SECURITY_MIN_ENFORCED_LEVEL = 4:
+#   - auth_level 1–3  -> always allowed
+#   - auth_level 4–6  -> subject to enforcement (soft/strict)
+SECURITY_MIN_ENFORCED_LEVEL = 4
+
+# Optional: extra tuning knobs for SecurityEngine.
+# These are read by security_engine.SecurityEngine if present, but the
+# engine already has safe defaults. Leaving them empty is fine.
+SECURITY_RISK_THRESHOLDS = {
+    # Example override (uses defaults when empty):
+    # "allow_max": 1.9,
+    # "log_only_max": 3.9,
+    # "confirm_max": 5.9,
+    # "confirm_sensitive_max": 7.9,
+    # "strong_verify_max": 8.9,
+}
+
+SECURITY_TOOL_OVERRIDES = {
+    # Example (future):
+    # "shell": {"min_level": 5, "tags": ["system", "shell"]},
+    # "delete_file": {"min_level": 4, "tags": ["filesystem", "destructive"]},
+}
+
+SECURITY_OPERATION_OVERRIDES = {
+    # Example (future):
+    # "file_write": {"min_level": 3, "tags": ["filesystem"]},
+    # "network_request": {"min_level": 2, "tags": ["network"]},
+}
 
 
 # ---- HARDNING BASE · Phase 2 — Concurrency & timeouts ----
