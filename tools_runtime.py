@@ -28,6 +28,20 @@ V3.4.x — IO guards integration:
 - Tool results can be large; we now clamp ONLY the *logged* representation
   using io_guards.clamp_tool_output before writing to history.
 - The value returned to callers (record["result"]) remains unmodified.
+
+V3.5 — Security engine wiring (Phase 1, non-blocking):
+- Each tool execution is also annotated with a SecurityEngine decision:
+    record["security"] = {
+        "auth_level": int,          # 1–6
+        "auth_label": str,          # e.g. "ALLOW", "CONFIRM"
+        "reason": str,
+        "risk_score": float,
+        "tags": List[str],
+        "policy_name": str,
+        "meta": Dict[str, Any],
+    }
+- This is still LOGGING ONLY — no enforcement yet. The decision will be
+  used later by /api/security/auth and the chat UI to request approvals.
 """
 
 from __future__ import annotations
@@ -35,12 +49,13 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, List, Set
 
 from config import TOOLS_RUNTIME_ENABLED, TOOLS_RUNTIME_LOGGING, TOOLS_MAX_RUNTIME_SECONDS
 from history import history_logger
 from risk import assess_risk
-from io_guards import clamp_tool_output  # new: shared output clamp for logging
+from io_guards import clamp_tool_output  # shared output clamp for logging
+from security_engine import SecurityEngine, SecurityAuthLevel
 
 
 @dataclass
@@ -120,6 +135,97 @@ def _log_tool_timing(
         pass
 
 
+def _build_security_context_tags(
+    risk_info: Dict[str, Any],
+    context: Optional[Dict[str, Any]],
+) -> List[str]:
+    """
+    Build a small tag set for SecurityEngine from risk + context.
+
+    This is deliberately conservative and must never raise.
+    """
+    tags: Set[str] = set()
+
+    # From risk_info
+    try:
+        r_tags = risk_info.get("tags") or []
+        if isinstance(r_tags, list):
+            for t in r_tags:
+                if t is None:
+                    continue
+                tags.add(str(t))
+    except Exception:
+        # Best-effort only
+        pass
+
+    # From context (source, profile/chat presence)
+    if isinstance(context, dict):
+        src = context.get("source")
+        if src:
+            tags.add(f"source:{src}")
+
+        if context.get("profile_id"):
+            tags.add("has_profile")
+
+        if context.get("chat_id"):
+            tags.add("has_chat")
+
+    return sorted(tags)
+
+
+def _compute_security_decision(
+    tool_name: str,
+    risk_info: Dict[str, Any],
+    context: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Call SecurityEngine to obtain a non-blocking authorization decision.
+
+    This must never raise; on failure we fall back to a minimal "ALLOW"
+    decision so that tool behavior is unaffected.
+    """
+    try:
+        raw_risk = risk_info.get("risk_level", 1)
+        try:
+            risk_score = float(raw_risk)
+        except Exception:
+            risk_score = 1.0
+
+        engine = SecurityEngine.shared()
+        ctx_tags = _build_security_context_tags(risk_info, context)
+
+        decision = engine.evaluate(
+            risk_score=risk_score,
+            operation_type="tool_call",
+            tool_name=tool_name,
+            context_tags=ctx_tags,
+            extra_meta={
+                "risk_level_from_risk_module": raw_risk,
+            },
+        )
+
+        return {
+            "auth_level": int(decision.auth_level),
+            "auth_label": decision.auth_level.name,
+            "reason": decision.reason,
+            "risk_score": float(decision.risk_score),
+            "tags": sorted(decision.tags),
+            "policy_name": decision.policy_name,
+            "meta": decision.meta,
+        }
+    except Exception:
+        # Fail-safe: allow but still attach something minimal.
+        return {
+            "auth_level": int(SecurityAuthLevel.ALLOW),
+            "auth_label": SecurityAuthLevel.ALLOW.name,
+            "reason": "SecurityEngine evaluation failed; defaulting to ALLOW.",
+            "risk_score": float(risk_info.get("risk_level") or 1.0),
+            "tags": ["security_engine_error"],
+            "policy_name": "security_engine_fallback",
+            "meta": {},
+        }
+
+
 def execute_tool(
     name: str,
     args: Optional[Dict[str, Any]] = None,
@@ -145,6 +251,15 @@ def execute_tool(
              "reasons": str,
              "kind": "tool",
           },
+          "security": {
+             "auth_level": int,
+             "auth_label": str,
+             "reason": str,
+             "risk_score": float,
+             "tags": List[str],
+             "policy_name": str,
+             "meta": Dict[str, Any],
+          },
         }
 
     Behavior:
@@ -160,6 +275,10 @@ def execute_tool(
     - The "result" inside the returned record is NOT clamped.
     - For history logging, we create a *separate* truncated representation
       using clamp_tool_output, to keep SQLite entries bounded.
+
+    V3.5 security wiring:
+    - SecurityEngine is consulted for every call to compute a non-blocking
+      auth decision stored under record["security"].
     """
     args = args or {}
 
@@ -181,6 +300,9 @@ def execute_tool(
             "kind": "tool",
         }
 
+    # ----- Security decision (also logging-only for now) -----
+    security_info = _compute_security_decision(name, risk_info, context)
+
     if not TOOLS_RUNTIME_ENABLED:
         record = {
             "ok": False,
@@ -192,6 +314,7 @@ def execute_tool(
                 "context_provided": context is not None,
             },
             "risk": risk_info,
+            "security": security_info,
         }
         return record
 
@@ -207,6 +330,7 @@ def execute_tool(
                 "context_provided": context is not None,
             },
             "risk": risk_info,
+            "security": security_info,
         }
         return record
 
@@ -241,6 +365,7 @@ def execute_tool(
             "context_provided": context is not None,
         },
         "risk": risk_info,
+        "security": security_info,
     }
 
     # History / dashboard logging (bounded representation)

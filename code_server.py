@@ -1,7 +1,7 @@
 from typing import Tuple, Dict, Any
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -32,6 +32,7 @@ from vision_pipeline import run_vision
 from chat_ui import router as chat_router
 from tools_runtime import execute_tool
 from risk import assess_risk
+from security_sessions import create_security_session  # NEW: V3.5 security sessions
 
 
 app = FastAPI(title="Local Code, Study & Chat Assistant")
@@ -488,6 +489,61 @@ def tools_execute(req: ToolExecRequest):
         error=record.get("error"),
         risk=record.get("risk"),
     )
+
+
+# =====================================================
+# 🔐 NEW — /api/security/auth  (V3.5 security system)
+# =====================================================
+
+@app.post("/api/security/auth")
+async def api_security_auth(
+    payload: Dict[str, Any] = Body(...),
+):
+    """
+    Create a temporary authorization session for security-sensitive actions.
+
+    This does NOT enforce or block anything by itself — it only records
+    an approval, which can later be consumed by enforcement code
+    (e.g., around tool execution).
+
+    Example payload:
+    {
+      "profile_id": "A",
+      "scope": "tool:delete_file",
+      "auth_level": 4,
+      "ttl_seconds": 300,
+      "max_uses": 1,
+      "secret": "optional-password-or-phrase"
+    }
+    """
+    profile_id = payload.get("profile_id") or ""
+    scope = payload.get("scope") or ""
+    auth_level = payload.get("auth_level")
+
+    if not profile_id or not scope:
+        raise HTTPException(status_code=400, detail="profile_id and scope are required.")
+    if auth_level is None:
+        raise HTTPException(status_code=400, detail="auth_level is required.")
+
+    try:
+        ttl_seconds = int(payload.get("ttl_seconds", 300))
+        max_uses = int(payload.get("max_uses", 1))
+        secret = payload.get("secret")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid ttl_seconds or max_uses.")
+
+    try:
+        session = create_security_session(
+            profile_id=profile_id,
+            scope=scope,
+            auth_level=int(auth_level),
+            ttl_seconds=ttl_seconds,
+            max_uses=max_uses,
+            secret=secret,
+        )
+        return {"ok": True, "session": session}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # =========================

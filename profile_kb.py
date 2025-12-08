@@ -8,7 +8,7 @@ This is intentionally minimal for V1:
 - Single table: profile_snippets
 - Basic operations: insert, list, build_context
 
-HARDNING BASE:
+HARDENING BASE:
 - SQLite connection hardened with WAL journaling, NORMAL sync, and a sensible timeout.
 """
 
@@ -71,7 +71,7 @@ _init_db()
 def add_snippet(profile_id: str, title: str, content: str) -> int:
     """
     Create a new snippet for a profile.
-    Returns the inserted row ID.
+    Returns the inserted row ID (or 0 on validation failure).
     """
     profile_id = (profile_id or "").strip()
     title = (title or "").strip()
@@ -86,7 +86,8 @@ def add_snippet(profile_id: str, title: str, content: str) -> int:
             """
             INSERT INTO profile_snippets (profile_id, title, content, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?)
-            """,
+            """
+            ,
             (profile_id, title, content, now, now),
         )
         conn.commit()
@@ -108,8 +109,23 @@ def update_snippet(snippet_id: int, new_content: str) -> bool:
             UPDATE profile_snippets
             SET content = ?, updated_at = ?
             WHERE id = ?
-            """,
+            """
+            ,
             (new_content, now, snippet_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def delete_snippet(snippet_id: int) -> bool:
+    """
+    Delete a snippet by ID.
+    Returns True if a row was removed, False otherwise.
+    """
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM profile_snippets WHERE id = ?",
+            (int(snippet_id),),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -131,7 +147,8 @@ def list_snippets(profile_id: str, limit: int = 20) -> List[Dict[str, Any]]:
             WHERE profile_id = ?
             ORDER BY updated_at DESC, id DESC
             LIMIT ?
-            """,
+            """
+            ,
             (profile_id, int(limit)),
         )
         rows = cur.fetchall()
@@ -161,8 +178,9 @@ def get_snippet(snippet_id: int) -> Optional[Dict[str, Any]]:
             SELECT id, profile_id, title, content, created_at, updated_at
             FROM profile_snippets
             WHERE id = ?
-            """,
-            (snippet_id,),
+            """
+            ,
+            (int(snippet_id),),
         )
         row = cur.fetchone()
 
@@ -220,3 +238,57 @@ def build_profile_context(profile_id: str, query: str, max_snippets: int = 8) ->
         )
 
     return "\n\n".join(blocks)
+
+
+# =========================
+# Preview helper for UI (read-only)
+# =========================
+
+def build_profile_preview(profile_id: str, limit: int = 20) -> Dict[str, Any]:
+    """
+    Build a lightweight preview payload for a profile's KB.
+
+    Returned shape (stable for UI):
+
+        {
+          "profile_id": "A",
+          "total": 3,
+          "snippets": [
+            {
+              "id": 1,
+              "title": "Note title",
+              "preview": "First line of note...",
+              "created_at": "...",
+              "updated_at": "...",
+            },
+            ...
+          ],
+        }
+    """
+    profile_id = (profile_id or "").strip()
+    if not profile_id:
+        return {"profile_id": "", "total": 0, "snippets": []}
+
+    snippets = list_snippets(profile_id, limit=limit)
+    items: List[Dict[str, Any]] = []
+
+    for s in snippets:
+        content = (s.get("content") or "").strip()
+        first_line = content.splitlines()[0] if content else ""
+        if len(first_line) > 160:
+            first_line = first_line[:157] + "..."
+        items.append(
+            {
+                "id": s["id"],
+                "title": s["title"],
+                "preview": first_line,
+                "created_at": s["created_at"],
+                "updated_at": s["updated_at"],
+            }
+        )
+
+    return {
+        "profile_id": profile_id,
+        "total": len(items),
+        "snippets": items,
+    }

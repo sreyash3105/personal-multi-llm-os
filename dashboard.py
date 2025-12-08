@@ -13,11 +13,17 @@ V3.4.x additions:
     - by mode
     - by model (from chat_model_used + models dict)
     - free-text search over prompt/output/judge/risk
+
+V3.5 additions (security phase, read-only):
+- Surfaces tool-level security metadata (if present) from tool_record.security:
+    - auth_level / auth_label / policy / tags
+- Shows tool name for tool_execution records.
+- Everything is read-only: this does NOT change how anything executes.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Tuple
 from html import escape
 
 from history import load_recent_records
@@ -38,7 +44,7 @@ def _shorten(text: Any, limit: int = 240) -> str:
     return s[: limit - 3] + "..."
 
 
-def _collect_mode_and_models(records: List[Dict[str, Any]]) -> (List[str], List[str]):
+def _collect_mode_and_models(records: List[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
     modes: Set[str] = set()
     models: Set[str] = set()
 
@@ -82,8 +88,10 @@ def render_dashboard(limit: int = 50) -> str:
         ts = rec.get("ts") or rec.get("timestamp") or ""
         mode = rec.get("mode") or ""
         kind = rec.get("kind") or ""
+
         original = _shorten(rec.get("original_prompt"))
         final_output = _shorten(rec.get("final_output"))
+
         chat_profile_name = rec.get("chat_profile_name") or rec.get("profile_name") or ""
         chat_id = rec.get("chat_id") or ""
         chat_model_used = rec.get("chat_model_used") or ""
@@ -91,6 +99,37 @@ def render_dashboard(limit: int = 50) -> str:
         judge = rec.get("judge") or {}
         risk = rec.get("risk") or {}
 
+        # -------- Tool + security metadata (if present) --------
+        tool_record = rec.get("tool_record") or {}
+        tool_name = ""
+        security = {}
+        security_level = ""
+        security_label = ""
+        security_policy = ""
+        security_tags = ""
+
+        if isinstance(tool_record, dict):
+            tool_name = tool_record.get("tool") or ""
+
+            # If top-level risk is missing, fall back to tool_record.risk
+            if not risk and isinstance(tool_record.get("risk"), dict):
+                risk = tool_record.get("risk") or {}
+
+            sec = tool_record.get("security") or {}
+            if isinstance(sec, dict):
+                security = sec
+                security_level = sec.get("auth_level", "")
+                security_label = sec.get("auth_label", "")
+                security_policy = sec.get("policy", "")
+                tags = sec.get("tags") or []
+                if isinstance(tags, list):
+                    security_tags = ", ".join(str(t) for t in tags)
+
+        # For older tool_execution entries that didn't set "kind"
+        if not kind and mode == "tool_execution":
+            kind = "tool"
+
+        # -------- Judge fields --------
         judge_conf = ""
         judge_conflict = ""
         judge_summary = ""
@@ -99,6 +138,7 @@ def render_dashboard(limit: int = 50) -> str:
             judge_conflict = judge.get("conflict_score", "")
             judge_summary = _shorten(judge.get("judgement_summary"))
 
+        # -------- Risk fields --------
         risk_level = ""
         risk_tags = ""
         risk_reasons = ""
@@ -123,6 +163,14 @@ def render_dashboard(limit: int = 50) -> str:
         data_model = escape(str(chat_model_used))
         data_models = escape(models_text)
 
+        # Security summary text (for quick scanning + search)
+        if security_policy:
+            sec_notes = security_policy
+        elif security_tags:
+            sec_notes = security_tags
+        else:
+            sec_notes = ""
+
         row_html = f"""
         <tr
           data-mode="{data_mode}"
@@ -144,6 +192,10 @@ def render_dashboard(limit: int = 50) -> str:
           <td>{_safe(risk_level)}</td>
           <td class="mono">{_safe(risk_tags)}</td>
           <td class="mono">{_safe(risk_reasons)}</td>
+          <td>{_safe(tool_name)}</td>
+          <td>{_safe(security_level)}</td>
+          <td class="mono">{_safe(security_label)}</td>
+          <td class="mono">{_safe(sec_notes)}</td>
         </tr>
         """
         rows_html_parts.append(row_html)
@@ -298,7 +350,7 @@ def render_dashboard(limit: int = 50) -> str:
         <input
           type="text"
           id="searchInput"
-          placeholder="Search prompt, output, judge, risk..."
+          placeholder="Search prompt, output, judge, risk, security..."
         />
       </label>
       <span class="toolbar-note">
@@ -324,6 +376,10 @@ def render_dashboard(limit: int = 50) -> str:
             <th style="width:70px;">Risk Level</th>
             <th style="width:140px;">Risk Tags</th>
             <th style="width:220px;">Risk Reasons</th>
+            <th style="width:120px;">Tool</th>
+            <th style="width:80px;">Sec Level</th>
+            <th style="width:140px;">Sec Label</th>
+            <th style="width:220px;">Sec Notes</th>
           </tr>
         </thead>
         <tbody>

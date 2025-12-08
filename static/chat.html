@@ -1,425 +1,506 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
-  <title>Local AI — Chat Workspace</title>
+  <title>Local AI OS — Chat Workspace</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     :root {
-      color-scheme: dark;
-      --bg: #020617;
-      --bg-soft: #020617;
+      --bg-main: #020617;
       --bg-elevated: #020617;
-      --border-subtle: #111827;
-      --border-strong: #1f2937;
-      --accent: #3b82f6;
-      --accent-soft: rgba(59,130,246,0.3);
-      --accent-softer: rgba(59,130,246,0.12);
-      --accent-strong: #2563eb;
-      --text-main: #e5e7eb;
-      --text-sub: #9ca3af;
-      --text-soft: #6b7280;
+      --bg-elevated-soft: #020617;
+      --bg-soft: #020617;
+      --border-subtle: #1f2937;
+      --border-strong: #374151;
+      --accent: #38bdf8;
+      --accent-soft: rgba(56, 189, 248, 0.08);
+      --accent-strong: rgba(56, 189, 248, 0.16);
       --danger: #f97373;
-      --radius-lg: 18px;
-      --radius-md: 12px;
-      --radius-pill: 999px;
+      --danger-soft: rgba(248, 113, 113, 0.1);
+      --text-main: #e5e7eb;
+      --text-soft: #9ca3af;
+      --text-softer: #6b7280;
+      --pill-bg: #020617;
+      --scrollbar-track: #020617;
+      --scrollbar-thumb: #374151;
     }
 
     * {
       box-sizing: border-box;
     }
 
+    html,
     body {
       margin: 0;
       padding: 0;
-      background: radial-gradient(circle at top left, #020617 0, #020617 40%, #020617 100%);
+      height: 100%;
+      background: radial-gradient(circle at top, #020617 0, #020617 55%, #000 100%);
       color: var(--text-main);
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
-    .app-root {
+    body {
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+    }
+
+    .app-shell {
+      width: 100%;
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 16px;
       display: flex;
       flex-direction: column;
-      height: 100vh;
+      gap: 12px;
     }
 
     header.app-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 10px 16px;
-      border-bottom: 1px solid var(--border-subtle);
-      background: linear-gradient(90deg, #020617, #020617 40%, #020617 100%);
+      gap: 12px;
+      padding: 10px 14px;
+      border-radius: 14px;
+      background: linear-gradient(90deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.92));
+      border: 1px solid #1f2937;
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.75);
     }
 
-    .app-title-block {
+    .header-title-block {
       display: flex;
       flex-direction: column;
       gap: 2px;
     }
 
-    .app-title {
-      font-size: 13px;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: var(--text-main);
+    .header-title-block h1 {
+      font-size: 16px;
+      font-weight: 600;
+      margin: 0;
+      letter-spacing: 0.02em;
     }
 
-    .app-subtitle {
+    .header-title-block p {
+      margin: 0;
       font-size: 11px;
-      color: var(--text-sub);
+      color: var(--text-soft);
     }
 
-    .app-status-pill {
+    .header-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      justify-content: flex-end;
+    }
+
+    .pill {
+      border-radius: 999px;
+      padding: 3px 8px;
+      border: 1px solid #1f2937;
+      background: rgba(15, 23, 42, 0.9);
+      font-size: 10px;
+      color: var(--text-soft);
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 4px 10px;
-      border-radius: var(--radius-pill);
-      border: 1px solid var(--border-subtle);
-      background: rgba(15,23,42,0.85);
-      font-size: 11px;
-      color: var(--text-sub);
+      gap: 4px;
+      white-space: nowrap;
     }
 
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: var(--radius-pill);
+    .pill-accent {
+      border-color: rgba(56, 189, 248, 0.4);
+      color: #e0f2fe;
+      background: linear-gradient(90deg, rgba(15, 118, 110, 0.22), rgba(12, 74, 110, 0.28));
+    }
+
+    .pill-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
       background: #22c55e;
-      box-shadow: 0 0 0 3px rgba(34,197,94,0.2);
+      box-shadow: 0 0 10px rgba(34, 197, 94, 0.7);
+    }
+
+    .pill-small {
+      font-size: 10px;
+      color: var(--text-softer);
     }
 
     main.app-main {
+      flex: 1;
       display: grid;
-      grid-template-columns: 240px 260px minmax(0, 1fr);
+      grid-template-columns: 260px minmax(0, 1.5fr) 260px;
       gap: 10px;
-      padding: 10px 12px 12px;
-      height: calc(100vh - 50px);
-      overflow: hidden;
+      min-height: 0;
     }
 
-    /* Panels */
+    @media (max-width: 1100px) {
+      main.app-main {
+        grid-template-columns: 230px minmax(0, 1.4fr) 250px;
+      }
+    }
+
+    @media (max-width: 900px) {
+      main.app-main {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto auto auto;
+      }
+    }
 
     .panel {
-      border-radius: var(--radius-lg);
+      border-radius: 14px;
+      background: radial-gradient(circle at top left, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.98));
       border: 1px solid var(--border-subtle);
-      background: radial-gradient(circle at top left, rgba(15,23,42,0.9) 0, #020617 65%);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.72);
       display: flex;
       flex-direction: column;
+      min-height: 0;
       overflow: hidden;
     }
 
     .panel-header {
+      padding: 8px 10px;
+      border-bottom: 1px solid #111827;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 8px 10px;
-      border-bottom: 1px solid var(--border-subtle);
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.16em;
-      color: var(--text-sub);
+      gap: 6px;
     }
 
-    .panel-header span {
-      display: inline-flex;
+    .panel-header-left {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .panel-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #9ca3af;
+    }
+
+    .panel-subtitle {
+      font-size: 11px;
+      color: var(--text-softer);
+    }
+
+    .panel-header-controls {
+      display: flex;
       align-items: center;
       gap: 6px;
     }
 
     .panel-body {
       flex: 1;
+      display: flex;
+      flex-direction: column;
       min-height: 0;
-      padding: 8px;
-      overflow: auto;
     }
-
-    .pill-small {
-      padding: 3px 8px;
-      border-radius: var(--radius-pill);
-      border: 1px solid var(--border-subtle);
-      font-size: 10px;
-      color: var(--text-soft);
-      background: #020617;
-    }
-
-    /* Profiles & chats list */
 
     .list {
+      list-style: none;
+      margin: 0;
+      padding: 4px 0 8px 0;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .list::-webkit-scrollbar,
+    .chat-body::-webkit-scrollbar,
+    .kb-list::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .list::-webkit-scrollbar-track,
+    .chat-body::-webkit-scrollbar-track,
+    .kb-list::-webkit-scrollbar-track {
+      background: var(--scrollbar-track);
+    }
+
+    .list::-webkit-scrollbar-thumb,
+    .chat-body::-webkit-scrollbar-thumb,
+    .kb-list::-webkit-scrollbar-thumb {
+      background: var(--scrollbar-thumb);
+      border-radius: 999px;
+    }
+
+    .list-item {
+      padding: 6px 10px;
+      font-size: 11px;
+      border-bottom: 1px solid rgba(31, 41, 55, 0.7);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .list-item:hover {
+      background: rgba(15, 23, 42, 0.95);
+    }
+
+    .list-item.active {
+      background: rgba(15, 23, 42, 0.98);
+      border-left: 2px solid var(--accent);
+      padding-left: 8px;
+    }
+
+    .list-item-title {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-main);
+    }
+
+    .list-item-meta {
+      font-size: 10px;
+      color: var(--text-softer);
+      display: flex;
+      justify-content: space-between;
+      gap: 4px;
+    }
+
+    .list-item-pill {
+      border-radius: 999px;
+      padding: 1px 6px;
+      border: 1px solid rgba(55, 65, 81, 0.9);
+      font-size: 9px;
+      color: var(--text-softer);
+      background: rgba(15, 23, 42, 0.85);
+    }
+
+    .profiles-toolbar,
+    .chats-toolbar {
+      padding: 4px 10px;
+      border-bottom: 1px solid #111827;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 10px;
+      color: var(--text-softer);
+    }
+
+    .profiles-toolbar button,
+    .chats-toolbar button {
+      font-size: 10px;
+      padding: 2px 6px;
+    }
+
+    .btn {
+      border-radius: 999px;
+      border: 1px solid var(--border-strong);
+      background: #020617;
+      font-size: 11px;
+      color: var(--text-main);
+      padding: 4px 10px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      border-color: rgba(56, 189, 248, 0.7);
+      background: radial-gradient(circle at top left, rgba(56, 189, 248, 0.2), rgba(56, 189, 248, 0.05));
+      color: #e0f2fe;
+    }
+
+    .btn-ghost {
+      background: transparent;
+      border-color: rgba(31, 41, 55, 0.9);
+      color: var(--text-soft);
+    }
+
+    .btn-danger {
+      border-color: rgba(248, 113, 113, 0.8);
+      background: var(--danger-soft);
+      color: #fee2e2;
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    /* Chat panel */
+
+    .chat-panel {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .chat-header {
+      padding: 10px 12px;
+      border-bottom: 1px solid #111827;
       display: flex;
       flex-direction: column;
       gap: 4px;
     }
 
-    .list-item {
-      border-radius: 12px;
-      padding: 6px 8px;
-      font-size: 12px;
-      color: var(--text-main);
-      border: 1px solid transparent;
-      background: rgba(15,23,42,0.60);
+    .chat-header-top {
       display: flex;
+      justify-content: space-between;
       align-items: center;
-      justify-content: space-between;
-      cursor: pointer;
-      transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease;
-    }
-
-    .list-item:hover {
-      background: rgba(37,99,235,0.22);
-      border-color: var(--accent-soft);
-      transform: translateY(-1px);
-    }
-
-    .list-item.active {
-      background: linear-gradient(135deg, rgba(37,99,235,0.6), rgba(15,23,42,0.95));
-      border-color: var(--accent-strong);
-      box-shadow: 0 0 0 1px rgba(37,99,235,0.4);
-    }
-
-    .list-item-main {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      overflow: hidden;
-    }
-
-    .list-title {
-      font-size: 12px;
-      font-weight: 500;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .list-sub {
-      font-size: 10px;
-      color: var(--text-soft);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .list-item-tag {
-      font-size: 10px;
-      color: var(--text-sub);
-      padding: 3px 6px;
-      border-radius: var(--radius-pill);
-      border: 1px solid var(--border-subtle);
-      background: rgba(15,23,42,0.82);
-    }
-
-    .list-footer {
-      padding-top: 6px;
-      display: flex;
-      justify-content: space-between;
       gap: 6px;
     }
 
-    .btn {
-      border-radius: var(--radius-pill);
-      border: 1px solid var(--border-subtle);
-      background: #020617;
-      color: var(--text-main);
-      font-size: 11px;
-      padding: 5px 9px;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease;
-    }
-
-    .btn:hover {
-      background: rgba(37,99,235,0.2);
-      border-color: rgba(37,99,235,0.7);
-      transform: translateY(-0.5px);
-    }
-
-    .btn-primary {
-      background: linear-gradient(135deg, #2563eb, #1d4ed8);
-      border-color: rgba(37,99,235,0.7);
+    .chat-header-title {
+      font-size: 13px;
+      font-weight: 500;
       color: #e5e7eb;
-      box-shadow: 0 8px 20px rgba(37,99,235,0.35);
     }
-
-    .btn-primary:hover {
-      background: linear-gradient(135deg, #1d4ed8, #1d4ed8);
-    }
-
-    .btn-ghost {
-      background: transparent;
-      border-style: dashed;
-      border-color: var(--border-subtle);
-      color: var(--text-sub);
-    }
-
-    /* Chat area */
 
     .chat-header-meta {
       display: flex;
       flex-direction: column;
-      gap: 3px;
-      font-size: 11px;
+      gap: 2px;
+      font-size: 10px;
+      color: var(--text-softer);
     }
 
     .chat-header-line {
       display: flex;
       align-items: center;
       gap: 6px;
+      flex-wrap: wrap;
     }
 
     .chat-model-pill {
-      padding: 3px 8px;
-      border-radius: var(--radius-pill);
-      border: 1px solid var(--border-subtle);
-      background: #020617;
+      border-radius: 999px;
+      padding: 2px 8px;
+      border: 1px solid rgba(55, 65, 81, 0.9);
+      background: rgba(15, 23, 42, 0.96);
       font-size: 10px;
-      color: var(--text-sub);
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
+      color: var(--text-soft);
     }
 
     .smart-toggle {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
-      padding: 3px 8px;
-      border-radius: var(--radius-pill);
-      border: 1px solid var(--border-subtle);
-      background: rgba(15,23,42,0.9);
+      gap: 4px;
       font-size: 10px;
-      color: var(--text-sub);
+      color: var(--text-soft);
       cursor: pointer;
     }
 
     .smart-toggle input {
-      cursor: pointer;
+      margin: 0;
     }
 
     .chat-body {
       flex: 1;
-      min-height: 0;
-      padding: 8px 10px;
-      overflow: auto;
+      padding: 10px 14px;
+      overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 6px;
-      font-size: 13px;
+      gap: 8px;
+      font-size: 11px;
     }
 
     .empty-placeholder {
-      flex: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 12px;
+      margin-top: 32px;
+      font-size: 11px;
       color: var(--text-soft);
       text-align: center;
-      padding: 8px;
     }
 
-    .message-row {
+    .msg-row {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      max-width: 92%;
+    }
+
+    .msg-row.user {
+      align-self: flex-end;
+      text-align: right;
+    }
+
+    .msg-row.assistant {
+      align-self: flex-start;
+    }
+
+    .msg-meta {
+      font-size: 10px;
+      color: var(--text-softer);
       display: flex;
       gap: 6px;
+      align-items: center;
     }
 
-    .message-row.user {
-      justify-content: flex-end;
-    }
-
-    .message-row.assistant {
-      justify-content: flex-start;
-    }
-
-    .message-bubble {
-      max-width: 70%;
-      padding: 7px 9px;
-      border-radius: 14px;
-      border: 1px solid var(--border-subtle);
-      background: rgba(15,23,42,0.9);
+    .msg-bubble {
+      border-radius: 12px;
+      padding: 6px 8px;
+      border: 1px solid rgba(31, 41, 55, 0.9);
+      background: rgba(15, 23, 42, 0.98);
       white-space: pre-wrap;
       word-wrap: break-word;
-      line-height: 1.35;
-      font-size: 13px;
     }
 
-    .message-row.user .message-bubble {
-      background: linear-gradient(135deg, #2563eb, #1d4ed8);
-      border-color: rgba(37,99,235,0.8);
-      color: #e5e7eb;
-      border-bottom-right-radius: 4px;
+    .msg-row.user .msg-bubble {
+      background: radial-gradient(circle at top right, rgba(56, 189, 248, 0.22), rgba(15, 23, 42, 0.98));
+      border-color: rgba(56, 189, 248, 0.55);
     }
 
-    .message-row.assistant .message-bubble {
-      border-bottom-left-radius: 4px;
+    .msg-image-tag {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.6);
+      font-size: 9px;
+      margin-bottom: 3px;
+      color: var(--text-softer);
     }
-
-    .message-meta {
-      font-size: 10px;
-      color: var(--text-soft);
-      margin-bottom: 2px;
-    }
-
-    .message-image {
-      display: block;
-      max-width: 100%;
-      max-height: 260px;
-      border-radius: 10px;
-      border: 1px solid var(--border-subtle);
-      margin-bottom: 4px;
-    }
-
-    /* Composer */
 
     .chat-footer {
-      border-top: 1px solid var(--border-subtle);
-      padding: 8px 10px 9px;
+      border-top: 1px solid #111827;
+      padding: 8px 10px 10px 10px;
       display: flex;
       flex-direction: column;
       gap: 6px;
-      background: radial-gradient(circle at top left, rgba(15,23,42,0.95) 0, #020617 60%);
     }
 
     .composer-row {
       display: flex;
-      gap: 6px;
+      align-items: flex-end;
+      gap: 8px;
     }
 
     .composer-text {
       flex: 1;
-      min-height: 0;
-      border-radius: 12px;
+      resize: none;
+      border-radius: 10px;
       border: 1px solid var(--border-subtle);
-      background: rgba(2,6,23,0.95);
-      padding: 6px 8px;
-      font-size: 13px;
+      background: #020617;
       color: var(--text-main);
-      resize: vertical;
-      max-height: 80px;
+      font-size: 11px;
+      padding: 6px 8px;
+      min-height: 40px;
+      max-height: 110px;
     }
 
     .composer-text:focus {
       outline: none;
-      border-color: rgba(37,99,235,0.7);
-      box-shadow: 0 0 0 1px rgba(37,99,235,0.35);
+      border-color: rgba(56, 189, 248, 0.6);
+      box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.3);
     }
 
     .composer-actions {
       display: flex;
-      align-items: flex-end;
-      gap: 6px;
+      flex-direction: column;
+      gap: 4px;
     }
 
     .composer-subrow {
       display: flex;
-      justify-content: space-between;
-      gap: 6px;
+      flex-direction: column;
+      gap: 4px;
       font-size: 10px;
-      color: var(--text-soft);
-      align-items: center;
+      color: var(--text-softer);
     }
 
     .vision-row {
@@ -427,96 +508,212 @@
       align-items: center;
       gap: 6px;
       font-size: 10px;
-      color: var(--text-soft);
-    }
-
-    input[type="file"] {
-      font-size: 10px;
-      color: var(--text-soft);
     }
 
     .status-bar {
       font-size: 10px;
+      color: var(--text-softer);
+      padding-top: 2px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .status-bar-error {
+      color: #fecaca;
+    }
+
+    .status-badge {
+      padding: 1px 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(55, 65, 81, 0.9);
+      background: rgba(15, 23, 42, 0.96);
+      font-size: 9px;
+      color: var(--text-softer);
+    }
+
+    /* Knowledge panel */
+
+    .kb-panel {
+      font-size: 11px;
+    }
+
+    .kb-count-pill {
+      border-radius: 999px;
+      padding: 2px 6px;
+      border: 1px solid rgba(55, 65, 81, 0.9);
+      font-size: 10px;
+      color: var(--text-softer);
+      background: rgba(15, 23, 42, 0.9);
+    }
+
+    .kb-list {
+      list-style: none;
+      margin: 0;
+      padding: 4px 0 8px 0;
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .kb-item {
+      padding: 6px 10px;
+      border-bottom: 1px solid rgba(31, 41, 55, 0.7);
+      cursor: default;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .kb-item-title {
+      font-weight: 500;
+      font-size: 11px;
+      color: var(--text-main);
+    }
+
+    .kb-item-preview {
+      font-size: 10px;
       color: var(--text-soft);
     }
 
-    .status-bar.error {
-      color: var(--danger);
+    .kb-item-meta {
+      font-size: 9px;
+      color: var(--text-softer);
+      display: flex;
+      justify-content: space-between;
+      gap: 4px;
+      margin-top: 2px;
     }
 
-    @media (max-width: 1080px) {
-      main.app-main {
-        grid-template-columns: 220px 230px minmax(0, 1fr);
-      }
+    .kb-empty {
+      padding: 12px 10px;
+      font-size: 10px;
+      color: var(--text-soft);
     }
 
-    @media (max-width: 900px) {
-      main.app-main {
-        grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: 200px 220px minmax(0, 1fr);
-        height: auto;
-        min-height: calc(100vh - 48px);
-      }
-      .panel {
-        min-height: 0;
-      }
+    .kb-new {
+      border-top: 1px solid #111827;
+      padding: 8px 10px 10px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: radial-gradient(circle at top, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.98));
+    }
+
+    .kb-new-label {
+      font-size: 10px;
+      color: var(--text-softer);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .kb-new-input {
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: #020617;
+      color: var(--text-main);
+      font-size: 10px;
+      padding: 4px 6px;
+      width: 100%;
+    }
+
+    .kb-new-input:focus,
+    .kb-new-textarea:focus {
+      outline: none;
+      border-color: rgba(56, 189, 248, 0.6);
+      box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.25);
+    }
+
+    .kb-new-textarea {
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: #020617;
+      color: var(--text-main);
+      font-size: 10px;
+      padding: 4px 6px;
+      min-height: 48px;
+      resize: vertical;
+    }
+
+    .kb-new-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 4px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .kb-hint {
+      font-size: 9px;
+      color: var(--text-softer);
     }
   </style>
 </head>
+
 <body>
-  <div class="app-root">
+  <div class="app-shell">
     <header class="app-header">
-      <div class="app-title-block">
-        <div class="app-title">LOCAL AI WORKSPACE</div>
-        <div class="app-subtitle">Profiles · Chats · Tools · Vision · LAN-only</div>
+      <div class="header-title-block">
+        <h1>Local AI Workspace</h1>
+        <p>Multi-profile chat · tools · vision · per-profile KB (LAN only)</p>
       </div>
-      <div class="app-status-pill">
-        <span class="status-dot"></span>
-        <span id="status-pill-text">Server connected</span>
+      <div class="header-badges">
+        <span class="pill pill-accent"><span class="pill-dot"></span> Local-only · No cloud</span>
+        <span class="pill">Code · Study · Chat · Vision</span>
+        <span class="pill">Telemetry: ON (Dashboard)</span>
+        <span class="pill">KB Preview + Notes</span>
       </div>
     </header>
 
     <main class="app-main">
-      <!-- Profiles -->
-      <section class="panel" id="profiles-panel">
+      <!-- Profiles & Chats -->
+      <section class="panel">
         <div class="panel-header">
-          <span>Profiles</span>
-          <button class="btn btn-ghost" id="btn-new-profile">+ Profile</button>
-        </div>
-        <div class="panel-body">
-          <div class="list" id="profiles-list"></div>
-          <div class="list-footer">
-            <button class="btn-ghost btn" id="btn-rename-profile" style="flex:1;">Rename</button>
-            <button class="btn-ghost btn" id="btn-delete-profile" style="flex:1;">Delete</button>
+          <div class="panel-header-left">
+            <div class="panel-title">Profiles & Chats</div>
+            <div class="panel-subtitle">Switch profiles, pick chats, set overrides.</div>
           </div>
+          <div class="panel-header-controls">
+            <span class="pill-small">Model overrides per profile &amp; chat</span>
+          </div>
+        </div>
+
+        <div class="panel-body">
+          <div class="profiles-toolbar">
+            <span>Profiles</span>
+            <div>
+              <button class="btn btn-ghost" id="btn-add-profile">+ Profile</button>
+            </div>
+          </div>
+          <ul class="list" id="profiles-list"></ul>
+
+          <div class="chats-toolbar">
+            <span>Chats</span>
+            <div style="display:flex; gap:4px;">
+              <button class="btn btn-ghost" id="btn-add-chat">+ Chat</button>
+              <button class="btn btn-ghost" id="btn-rename-chat">Rename</button>
+              <button class="btn btn-danger" id="btn-delete-chat">Delete</button>
+            </div>
+          </div>
+          <ul class="list" id="chats-list"></ul>
         </div>
       </section>
 
-      <!-- Chats -->
-      <section class="panel" id="chats-panel">
-        <div class="panel-header">
-          <span>Chats</span>
-          <button class="btn btn-ghost" id="btn-new-chat">+ Chat</button>
-        </div>
-        <div class="panel-body">
-          <div class="list" id="chats-list"></div>
-          <div class="list-footer">
-            <button class="btn-ghost btn" id="btn-rename-chat" style="flex:1;">Rename</button>
-            <button class="btn-ghost btn" id="btn-delete-chat" style="flex:1;">Delete</button>
+      <!-- Chat -->
+      <section class="panel chat-panel">
+        <div class="chat-header">
+          <div class="chat-header-top">
+            <div class="chat-header-title">Chat</div>
+            <div class="status-badge">Smart = planner → answer → judge</div>
           </div>
-        </div>
-      </section>
-
-      <!-- Chat main -->
-      <section class="panel" id="chat-panel">
-        <div class="panel-header">
           <div class="chat-header-meta">
             <div class="chat-header-line">
               <span id="chat-title-label">No chat selected</span>
             </div>
             <div class="chat-header-line">
-              <div class="chat-model-pill" id="model-pill">
-                <span>Model: <span id="model-name-label">-</span></span>
+              <div class="chat-model-pill">
+                Model: <span id="model-name-label">-</span>
               </div>
               <label class="smart-toggle" title="Smart uses the smarter model for deeper reasoning">
                 <input type="checkbox" id="smart-toggle" />
@@ -529,14 +726,14 @@
 
         <div class="chat-body" id="messages-container">
           <div class="empty-placeholder">
-            Select or create a profile & chat on the left to start talking to your local AI.
+            Select or create a profile &amp; chat on the left to start talking to your local AI.
           </div>
         </div>
 
         <div class="chat-footer">
           <div class="composer-row">
             <textarea id="composer-input" class="composer-text" rows="2"
-              placeholder="Ask your assistant... (type ///tool ping + Enter for tools, Shift+Enter for newline)"></textarea>
+              placeholder="Ask your assistant. (type ///tool ping + Enter for tools, Shift+Enter for newline)"></textarea>
             <div class="composer-actions">
               <button class="btn btn-primary" id="btn-send">Send</button>
             </div>
@@ -550,7 +747,41 @@
                 style="flex:1; border-radius:10px; border:1px solid var(--border-subtle); background:#020617; padding:3px 6px; color:var(--text-main); font-size:11px;" />
               <button class="btn btn-ghost" id="btn-send-vision">Send Image</button>
             </div>
-            <div class="status-bar" id="status-bar">Ready.</div>
+            <div class="status-bar" id="status-bar">
+              <span>Status: Ready.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Knowledge Preview -->
+      <section class="panel kb-panel">
+        <div class="panel-header">
+          <div class="panel-header-left">
+            <div class="panel-title">Knowledge Preview</div>
+            <div class="panel-subtitle">Recent saved notes for this profile (KB v1).</div>
+          </div>
+          <div class="panel-header-controls">
+            <span class="kb-count-pill" id="kb-count-pill">0 notes</span>
+          </div>
+        </div>
+        <div class="panel-body">
+          <ul class="kb-list" id="kb-preview-list">
+            <li class="kb-empty">Select a profile to view its saved notes.</li>
+          </ul>
+          <div class="kb-new">
+            <div class="kb-new-label">
+              <span>Quick KB note</span>
+              <span class="kb-hint">Saved to current profile only</span>
+            </div>
+            <input type="text" id="kb-note-title" class="kb-new-input" placeholder="Short title (e.g. 'LLM defaults')" />
+            <textarea id="kb-note-content" class="kb-new-textarea"
+              placeholder="What do you want this profile to remember? Decisions, constraints, preferences..."></textarea>
+            <div class="kb-new-actions">
+              <span class="kb-hint">Tip: keep it short &amp; factual, or save the last answer.</span>
+              <button class="btn btn-ghost" id="kb-save-last-answer">Save last answer</button>
+              <button class="btn btn-primary" id="kb-save-note">Save to KB</button>
+            </div>
           </div>
         </div>
       </section>
@@ -568,50 +799,60 @@
 
     let currentProfileId = null;
     let currentChatId = null;
+    let lastAssistantText = "";
 
     const domProfilesList = document.getElementById("profiles-list");
     const domChatsList = document.getElementById("chats-list");
     const domMessages = document.getElementById("messages-container");
     const domModelNameLabel = document.getElementById("model-name-label");
-    const domChatTitleLabel = document.getElementById("chat-title-label");
     const domSmartToggle = document.getElementById("smart-toggle");
     const domComposer = document.getElementById("composer-input");
-    const domStatusBar = document.getElementById("status-bar");
-    const domStatusPillText = document.getElementById("status-pill-text");
+    const btnSend = document.getElementById("btn-send");
     const domVisionFile = document.getElementById("vision-file");
     const domVisionPrompt = document.getElementById("vision-prompt");
+    const btnSendVision = document.getElementById("btn-send-vision");
+    const statusBar = document.getElementById("status-bar");
+    const domChatTitleLabel = document.getElementById("chat-title-label");
 
-    const btnNewProfile = document.getElementById("btn-new-profile");
-    const btnRenameProfile = document.getElementById("btn-rename-profile");
-    const btnDeleteProfile = document.getElementById("btn-delete-profile");
+    const domKbList = document.getElementById("kb-preview-list");
+    const domKbCount = document.getElementById("kb-count-pill");
+    const kbTitleInput = document.getElementById("kb-note-title");
+    const kbContentInput = document.getElementById("kb-note-content");
+    const kbSaveButton = document.getElementById("kb-save-note");
+    const kbSaveLastButton = document.getElementById("kb-save-last-answer");
 
-    const btnNewChat = document.getElementById("btn-new-chat");
+    const btnAddProfile = document.getElementById("btn-add-profile");
+    const btnAddChat = document.getElementById("btn-add-chat");
     const btnRenameChat = document.getElementById("btn-rename-chat");
     const btnDeleteChat = document.getElementById("btn-delete-chat");
 
-    const btnSend = document.getElementById("btn-send");
-    const btnSendVision = document.getElementById("btn-send-vision");
-
     function setStatus(text, isError = false) {
-      domStatusBar.textContent = text;
-      domStatusBar.classList.toggle("error", !!isError);
+      if (!statusBar) return;
+      statusBar.textContent = text;
+      if (isError) {
+        statusBar.classList.add("status-bar-error");
+      } else {
+        statusBar.classList.remove("status-bar-error");
+      }
     }
 
     async function apiGet(path) {
       const res = await fetch(API_BASE + path);
-      if (!res.ok) throw new Error(`GET ${path} → ${res.status}`);
+      if (!res.ok) {
+        throw new Error(`GET ${path} failed: ${res.status}`);
+      }
       return res.json();
     }
 
-    async function apiJson(path, method, bodyObj) {
+    async function apiJson(path, method, body) {
       const res = await fetch(API_BASE + path, {
-        method,
+        method: method || "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(bodyObj),
+        body: JSON.stringify(body || {}),
       });
       if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(`${method} ${path} → ${res.status}: ${txt}`);
+        const txt = await res.text();
+        throw new Error(`${method} ${path} failed: ${res.status} ${txt}`);
       }
       return res.json();
     }
@@ -622,241 +863,199 @@
         body: formData,
       });
       if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(`POST ${path} → ${res.status}: ${txt}`);
+        const txt = await res.text();
+        throw new Error(`FORM ${path} failed: ${res.status} ${txt}`);
       }
       return res.json();
     }
 
     function renderProfiles(profiles) {
       domProfilesList.innerHTML = "";
-      if (!profiles || profiles.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "empty-placeholder";
-        empty.style.fontSize = "11px";
-        empty.textContent = "No profiles yet. Click + Profile to add one.";
-        domProfilesList.appendChild(empty);
+      if (!profiles || !profiles.length) {
+        const li = document.createElement("li");
+        li.className = "list-item";
+        li.textContent = "No profiles yet.";
+        domProfilesList.appendChild(li);
         return;
       }
 
       profiles.forEach((p) => {
-        const item = document.createElement("div");
-        item.className = "list-item" + (p.id === currentProfileId ? " active" : "");
-        item.dataset.profileId = p.id;
+        const li = document.createElement("li");
+        li.className = "list-item";
+        if (p.id === currentProfileId) {
+          li.classList.add("active");
+        }
 
-        const main = document.createElement("div");
-        main.className = "list-item-main";
         const title = document.createElement("div");
-        title.className = "list-title";
+        title.className = "list-item-title";
         title.textContent = p.display_name || p.id;
-        const sub = document.createElement("div");
-        sub.className = "list-sub";
-        sub.textContent = p.model_override ? `Override: ${p.model_override}` : "Default model";
-        main.appendChild(title);
-        main.appendChild(sub);
 
-        const tag = document.createElement("div");
-        tag.className = "list-item-tag";
-        tag.textContent = (p.chat_count || 0) + " chats";
+        const meta = document.createElement("div");
+        meta.className = "list-item-meta";
 
-        item.appendChild(main);
-        item.appendChild(tag);
+        const left = document.createElement("span");
+        left.textContent = `Profile ${p.id}`;
 
-        item.addEventListener("click", () => {
+        const right = document.createElement("span");
+        right.className = "list-item-pill";
+        right.textContent = p.model_override || "default";
+
+        meta.appendChild(left);
+        meta.appendChild(right);
+
+        li.appendChild(title);
+        li.appendChild(meta);
+
+        li.addEventListener("click", async () => {
+          if (currentProfileId === p.id) return;
           currentProfileId = p.id;
           currentChatId = null;
-          refreshProfiles();
-          loadChats(p.id);
+          await refreshChatsAndMessages();
+          await loadKbPreview();
         });
 
-        domProfilesList.appendChild(item);
+        domProfilesList.appendChild(li);
       });
     }
 
     function renderChats(chats, profile) {
       domChatsList.innerHTML = "";
-      if (!chats || chats.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "empty-placeholder";
-        empty.style.fontSize = "11px";
-        empty.textContent = "No chats yet. Click + Chat to create.";
-        domChatsList.appendChild(empty);
+      if (!chats || !chats.length) {
+        const li = document.createElement("li");
+        li.className = "list-item";
+        li.textContent = "No chats yet.";
+        domChatsList.appendChild(li);
         return;
       }
 
       chats.forEach((c) => {
-        const item = document.createElement("div");
-        item.className = "list-item" + (c.id === currentChatId ? " active" : "");
-        item.dataset.chatId = c.id;
+        const li = document.createElement("li");
+        li.className = "list-item";
+        if (c.id === currentChatId) {
+          li.classList.add("active");
+        }
 
-        const main = document.createElement("div");
-        main.className = "list-item-main";
         const title = document.createElement("div");
-        title.className = "list-title";
+        title.className = "list-item-title";
         title.textContent = c.display_name || c.id;
-        const sub = document.createElement("div");
-        sub.className = "list-sub";
-        sub.textContent = (c.message_count || 0) + " messages";
-        main.appendChild(title);
-        main.appendChild(sub);
 
-        const tag = document.createElement("div");
-        tag.className = "list-item-tag";
-        tag.textContent = c.model_override ? `Override: ${c.model_override}` : "Profile default";
+        const meta = document.createElement("div");
+        meta.className = "list-item-meta";
 
-        item.appendChild(main);
-        item.appendChild(tag);
+        const left = document.createElement("span");
+        left.textContent = `Chat ${c.id}`;
 
-        item.addEventListener("click", () => {
+        const right = document.createElement("span");
+        right.className = "list-item-pill";
+        right.textContent = c.model_override || profile.model_override || "profile/default";
+
+        meta.appendChild(left);
+        meta.appendChild(right);
+
+        li.appendChild(title);
+        li.appendChild(meta);
+
+        li.addEventListener("click", async () => {
+          if (currentChatId === c.id) return;
           currentChatId = c.id;
-          refreshChats(profile.id);
-          loadMessages(profile.id, c.id, c.display_name || c.id);
+          await loadMessages(currentProfileId, currentChatId, c.display_name || c.id);
         });
 
-        domChatsList.appendChild(item);
+        domChatsList.appendChild(li);
       });
     }
 
-    function parseImageText(text) {
-      if (!text.startsWith("__IMG__")) return null;
-      const lines = text.split("\n");
-      const header = lines[0];
-      const restCaption = lines.slice(1).join("\n").trim();
-      const marker = header.slice("__IMG__".length);
-      const [mime, b64] = marker.split("|");
-      if (!mime || !b64) return null;
-      return {
-        mime: mime,
-        dataUrl: `data:${mime};base64,${b64}`,
-        caption: restCaption || "",
-      };
-    }
-
-    function renderMessages(messages, chatDisplayName) {
+    function renderMessages(messages) {
       domMessages.innerHTML = "";
-      if (!messages || messages.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "empty-placeholder";
-        empty.textContent = "No messages yet. Say hello 👋";
-        domMessages.appendChild(empty);
-        domChatTitleLabel.textContent = chatDisplayName || "Chat";
+      lastAssistantText = "";
+
+      if (!messages || !messages.length) {
+        const div = document.createElement("div");
+        div.className = "empty-placeholder";
+        div.textContent = "No messages yet. Say hi to your local assistant.";
+        domMessages.appendChild(div);
         return;
       }
 
       messages.forEach((m) => {
-        const row = document.createElement("div");
-        row.className = "message-row " + (m.role === "user" ? "user" : "assistant");
-
-        const bubble = document.createElement("div");
-        bubble.className = "message-bubble";
-
-        const meta = document.createElement("div");
-        meta.className = "message-meta";
-        const ts = m.ts ? new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-        meta.textContent = (m.role === "user" ? "You" : "Assistant") + (ts ? ` · ${ts}` : "");
-
-        bubble.appendChild(meta);
-
-        let bodyText = m.text || "";
-        const imgInfo = parseImageText(bodyText);
-        if (imgInfo) {
-          const img = document.createElement("img");
-          img.className = "message-image";
-          img.src = imgInfo.dataUrl;
-          img.alt = "Uploaded image";
-          bubble.appendChild(img);
-          const p = document.createElement("div");
-          p.textContent = imgInfo.caption || "(image)";
-          bubble.appendChild(p);
-        } else {
-          const p = document.createElement("div");
-          p.textContent = bodyText;
-          bubble.appendChild(p);
+        if (m.role === "assistant") {
+          lastAssistantText = m.text || "";
         }
 
+        const row = document.createElement("div");
+        row.className = "msg-row " + (m.role === "assistant" ? "assistant" : "user");
+
+        const meta = document.createElement("div");
+        meta.className = "msg-meta";
+        meta.textContent = `${m.role.toUpperCase()} · ${m.ts || ""}`;
+
+        const bubble = document.createElement("div");
+        bubble.className = "msg-bubble";
+
+        const text = m.text || "";
+
+        if (text.startsWith("__IMG__")) {
+          const parts = text.split("\n");
+          const rest = parts.slice(1).join("\n");
+
+          const tag = document.createElement("div");
+          tag.className = "msg-image-tag";
+          tag.textContent = "[IMAGE ATTACHED]";
+          bubble.appendChild(tag);
+
+          const contentDiv = document.createElement("div");
+          contentDiv.textContent = rest;
+          bubble.appendChild(contentDiv);
+        } else {
+          bubble.textContent = text;
+        }
+
+        row.appendChild(meta);
         row.appendChild(bubble);
         domMessages.appendChild(row);
       });
 
       domMessages.scrollTop = domMessages.scrollHeight;
-      domChatTitleLabel.textContent = chatDisplayName || "Chat";
     }
 
-    async function refreshProfiles() {
-      try {
-        const data = await apiGet("/api/chat/profiles");
-        const profiles = data.profiles || [];
-        if (!profiles.length) {
-          renderProfiles([]);
-          return;
-        }
-        if (!currentProfileId) {
-          currentProfileId = profiles[0].id;
-        }
-        renderProfiles(profiles);
-      } catch (err) {
-        console.error("refreshProfiles", err);
-        setStatus("Failed to load profiles.", true);
+    async function refreshChatsAndMessages() {
+      if (!currentProfileId) return;
+
+      const chatsRes = await apiGet(`/api/chat/chats?profile_id=${encodeURIComponent(currentProfileId)}`);
+      const profile = chatsRes.profile;
+      let chats = chatsRes.chats || [];
+
+      if (!chats.length) {
+        const createdChat = await apiJson("/api/chat/chats", "POST", { profile_id: currentProfileId });
+        chats = [createdChat];
       }
-    }
 
-    async function loadChats(profileId) {
-      try {
-        const data = await apiGet(`/api/chat/chats?profile_id=${encodeURIComponent(profileId)}`);
-        const chats = data.chats || [];
-        const profile = data.profile;
-        if (!chats.length) {
-          renderChats([], profile);
-          domMessages.innerHTML = "<div class='empty-placeholder'>No chats yet. Click + Chat to create.</div>";
-          domChatTitleLabel.textContent = "No chat selected";
-          return;
-        }
-        if (!currentChatId) {
-          currentChatId = chats[0].id;
-        }
-        renderChats(chats, profile);
-        const activeChat = chats.find((c) => c.id === currentChatId) || chats[0];
-        currentChatId = activeChat.id;
-        renderChats(chats, profile);
-        await loadMessages(profileId, activeChat.id, activeChat.display_name || activeChat.id);
-      } catch (err) {
-        console.error("loadChats", err);
-        setStatus("Failed to load chats.", true);
+      if (!currentChatId) {
+        currentChatId = chats[0].id;
       }
+
+      renderChats(chats, profile);
+
+      const activeChat = chats.find((c) => c.id === currentChatId) || chats[0];
+      await loadMessages(currentProfileId, activeChat.id, activeChat.display_name || activeChat.id);
     }
 
-    async function loadMessages(profileId, chatId, chatDisplayName) {
+    async function bootstrap() {
       try {
-        const data = await apiGet(`/api/chat/messages?profile_id=${encodeURIComponent(profileId)}&chat_id=${encodeURIComponent(chatId)}`);
-        const msgs = data.messages || [];
-        renderMessages(msgs, chatDisplayName);
+        const models = await apiGet("/api/chat/models");
+        modelsInfo = models || modelsInfo;
       } catch (err) {
-        console.error("loadMessages", err);
-        setStatus("Failed to load messages.", true);
+        console.error("Failed to load models", err);
       }
-    }
 
-    async function initModels() {
-      try {
-        const data = await apiGet("/api/chat/models");
-        modelsInfo = data;
-        domModelNameLabel.textContent = data.default_model || "-";
-      } catch (err) {
-        console.error("initModels", err);
-      }
-    }
-
-    async function ensureProfileAndChat() {
-      // Try to load profiles, create one if none
-      const profsRes = await apiGet("/api/chat/profiles");
-      let profiles = profsRes.profiles || [];
+      const profRes = await apiGet("/api/chat/profiles");
+      let profiles = profRes.profiles || [];
       if (!profiles.length) {
         const created = await apiJson("/api/chat/profiles", "POST", {});
         profiles = [created];
       }
       if (!currentProfileId) currentProfileId = profiles[0].id;
 
-      // Then ensure at least one chat
       const chatsRes = await apiGet(`/api/chat/chats?profile_id=${encodeURIComponent(currentProfileId)}`);
       let chats = chatsRes.chats || [];
       if (!chats.length) {
@@ -870,6 +1069,219 @@
 
       const activeChat = chats.find((c) => c.id === currentChatId) || chats[0];
       await loadMessages(currentProfileId, activeChat.id, activeChat.display_name || activeChat.id);
+      await loadKbPreview();
+    }
+
+    async function loadMessages(profileId, chatId, chatTitle) {
+      if (!profileId || !chatId) return;
+      try {
+        const res = await apiGet(`/api/chat/messages?profile_id=${encodeURIComponent(profileId)}&chat_id=${encodeURIComponent(chatId)}`);
+        const messages = res.messages || [];
+        const profile = res.profile || {};
+        const chat = res.chat || {};
+
+        if (chatTitle !== null && chatTitle !== undefined) {
+          domChatTitleLabel.textContent = chatTitle || chat.display_name || chat.id || "Chat";
+        } else {
+          domChatTitleLabel.textContent = chat.display_name || chat.id || "Chat";
+        }
+
+        const effectiveModel = chat.model_override || profile.model_override || modelsInfo.default_model || "-";
+        domModelNameLabel.textContent = effectiveModel;
+
+        renderMessages(messages);
+      } catch (err) {
+        console.error("loadMessages", err);
+        setStatus("Error loading messages.", true);
+      }
+    }
+
+    async function loadKbPreview() {
+      if (!currentProfileId) {
+        domKbList.innerHTML = '<li class="kb-empty">Select a profile to view its saved notes.</li>';
+        domKbCount.textContent = "0 notes";
+        return;
+      }
+
+      try {
+        const res = await apiGet(`/api/chat/profile_kb_preview?profile_id=${encodeURIComponent(currentProfileId)}&limit=20`);
+        const snippets = res.snippets || [];
+        const total = res.total || snippets.length || 0;
+
+        domKbCount.textContent = total === 1 ? "1 note" : `${total} notes`;
+
+        if (!snippets.length) {
+          domKbList.innerHTML = '<li class="kb-empty">No saved notes yet for this profile. Use the form below to create some.</li>';
+          return;
+        }
+
+        domKbList.innerHTML = "";
+        snippets.forEach((s) => {
+          const li = document.createElement("li");
+          li.className = "kb-item";
+
+          const title = document.createElement("div");
+          title.className = "kb-item-title";
+          title.textContent = s.title || `Note #${s.id}`;
+
+          const preview = document.createElement("div");
+          preview.className = "kb-item-preview";
+          preview.textContent = s.preview || "";
+
+          const meta = document.createElement("div");
+          meta.className = "kb-item-meta";
+
+          const left = document.createElement("span");
+          left.textContent = `#${s.id}`;
+
+          const rightWrap = document.createElement("span");
+          rightWrap.style.display = "flex";
+          rightWrap.style.gap = "4px";
+          rightWrap.style.alignItems = "center";
+
+          const tsSpan = document.createElement("span");
+          tsSpan.textContent = s.updated_at || s.created_at || "";
+
+          const delBtn = document.createElement("button");
+          delBtn.textContent = "✕";
+          delBtn.className = "btn btn-ghost";
+          delBtn.style.padding = "0 6px";
+          delBtn.style.fontSize = "9px";
+
+          delBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            if (!confirm("Delete this KB note?")) return;
+            try {
+              await apiJson(`/api/chat/profile_kb/${encodeURIComponent(s.id)}`, "DELETE", {});
+              setStatus("KB note deleted.");
+              await loadKbPreview();
+            } catch (err) {
+              console.error("deleteKbNote", err);
+              setStatus("Failed to delete KB note.", true);
+            }
+          });
+
+          rightWrap.appendChild(tsSpan);
+          rightWrap.appendChild(delBtn);
+
+          meta.appendChild(left);
+          meta.appendChild(rightWrap);
+
+          li.appendChild(title);
+          li.appendChild(preview);
+          li.appendChild(meta);
+
+          domKbList.appendChild(li);
+        });
+      } catch (err) {
+        console.error("loadKbPreview", err);
+        domKbList.innerHTML = '<li class="kb-empty">Failed to load KB preview.</li>';
+        domKbCount.textContent = "0 notes";
+      }
+    }
+
+    async function createKbNote(customTitle, customContent) {
+      if (!currentProfileId) {
+        setStatus("Select a profile before saving KB notes.", true);
+        return;
+      }
+
+      const rawTitle = customTitle !== undefined ? customTitle : kbTitleInput.value;
+      const rawContent = customContent !== undefined ? customContent : kbContentInput.value;
+
+      const title = (rawTitle || "").trim() || "Note";
+      const content = (rawContent || "").trim();
+
+      if (!content) {
+        setStatus("KB note content is empty.", true);
+        return;
+      }
+
+      kbSaveButton.disabled = true;
+      if (kbSaveLastButton) kbSaveLastButton.disabled = true;
+      setStatus("Saving KB note...");
+
+      try {
+        await apiJson("/api/chat/profile_kb_note", "POST", {
+          profile_id: currentProfileId,
+          title,
+          content,
+        });
+
+        if (customTitle === undefined) kbTitleInput.value = "";
+        if (customContent === undefined) kbContentInput.value = "";
+
+        setStatus("KB note saved.");
+        await loadKbPreview();
+      } catch (err) {
+        console.error("createKbNote", err);
+        setStatus("Failed to save KB note.", true);
+      } finally {
+        kbSaveButton.disabled = false;
+        if (kbSaveLastButton) kbSaveLastButton.disabled = false;
+      }
+    }
+
+    async function createProfile() {
+      try {
+        const created = await apiJson("/api/chat/profiles", "POST", {});
+        const profRes = await apiGet("/api/chat/profiles");
+        const profiles = profRes.profiles || [];
+        currentProfileId = created.id;
+        currentChatId = null;
+        renderProfiles(profiles);
+        await refreshChatsAndMessages();
+        await loadKbPreview();
+      } catch (err) {
+        console.error("createProfile", err);
+        setStatus("Failed to create profile.", true);
+      }
+    }
+
+    async function createChat() {
+      if (!currentProfileId) return;
+      try {
+        const created = await apiJson("/api/chat/chats", "POST", { profile_id: currentProfileId });
+        const chatsRes = await apiGet(`/api/chat/chats?profile_id=${encodeURIComponent(currentProfileId)}`);
+        const profile = chatsRes.profile;
+        const chats = chatsRes.chats || [];
+        currentChatId = created.id;
+        renderChats(chats, profile);
+        await loadMessages(currentProfileId, currentChatId, created.display_name || created.id);
+      } catch (err) {
+        console.error("createChat", err);
+        setStatus("Failed to create chat.", true);
+      }
+    }
+
+    async function renameChat() {
+      if (!currentProfileId || !currentChatId) return;
+      const newName = prompt("New chat name:");
+      if (!newName) return;
+
+      try {
+        await apiJson(`/api/chat/chats/${encodeURIComponent(currentProfileId)}/${encodeURIComponent(currentChatId)}`, "PATCH", {
+          display_name: newName,
+        });
+        await refreshChatsAndMessages();
+      } catch (err) {
+        console.error("renameChat", err);
+        setStatus("Failed to rename chat.", true);
+      }
+    }
+
+    async function deleteChat() {
+      if (!currentProfileId || !currentChatId) return;
+      if (!confirm("Delete this chat? This cannot be undone.")) return;
+
+      try {
+        await apiJson(`/api/chat/chats/${encodeURIComponent(currentProfileId)}/${encodeURIComponent(currentChatId)}`, "DELETE", {});
+        currentChatId = null;
+        await refreshChatsAndMessages();
+      } catch (err) {
+        console.error("deleteChat", err);
+        setStatus("Failed to delete chat.", true);
+      }
     }
 
     async function sendMessage() {
@@ -896,12 +1308,9 @@
         const res = await apiJson("/api/chat", "POST", body);
         domComposer.value = "";
         setStatus("OK.");
-        domModelNameLabel.textContent = smart
-          ? (modelsInfo.smart_model || modelsInfo.default_model || "smart-model")
-          : (modelsInfo.default_model || "-");
 
-        // Reload messages to show history
         await loadMessages(res.profile_id, res.chat_id, null);
+        await loadKbPreview();
       } catch (err) {
         console.error("sendMessage", err);
         setStatus("Error sending message.", true);
@@ -947,127 +1356,8 @@
       }
     }
 
-    // ---- Profile controls ----
-
-    btnNewProfile.addEventListener("click", async () => {
-      const name = prompt("Profile display name (optional):", "");
-      try {
-        const created = await apiJson("/api/chat/profiles", "POST", {
-          display_name: name || null,
-          model_override: null,
-        });
-        currentProfileId = created.id;
-        currentChatId = null;
-        await ensureProfileAndChat();
-        setStatus("Profile created.");
-      } catch (err) {
-        console.error("newProfile", err);
-        setStatus("Failed to create profile.", true);
-      }
-    });
-
-    btnRenameProfile.addEventListener("click", async () => {
-      if (!currentProfileId) {
-        setStatus("No profile selected.", true);
-        return;
-      }
-      const name = prompt("New profile name:", "");
-      if (name === null) return;
-      try {
-        await apiJson(`/api/chat/profiles/${encodeURIComponent(currentProfileId)}`, "PATCH", {
-          display_name: name || null,
-        });
-        await refreshProfiles();
-        setStatus("Profile renamed.");
-      } catch (err) {
-        console.error("renameProfile", err);
-        setStatus("Failed to rename profile.", true);
-      }
-    });
-
-    btnDeleteProfile.addEventListener("click", async () => {
-      if (!currentProfileId) {
-        setStatus("No profile selected.", true);
-        return;
-      }
-      if (!confirm("Delete this profile and all its chats?")) return;
-      try {
-        await apiJson(`/api/chat/profiles/${encodeURIComponent(currentProfileId)}`, "DELETE", {});
-        currentProfileId = null;
-        currentChatId = null;
-        domMessages.innerHTML = "<div class='empty-placeholder'>Select or create a profile & chat to start.</div>";
-        await ensureProfileAndChat();
-        setStatus("Profile deleted.");
-      } catch (err) {
-        console.error("deleteProfile", err);
-        setStatus("Failed to delete profile.", true);
-      }
-    });
-
-    // ---- Chat controls ----
-
-    btnNewChat.addEventListener("click", async () => {
-      if (!currentProfileId) {
-        setStatus("No profile selected.", true);
-        return;
-      }
-      const name = prompt("Chat display name (optional):", "");
-      try {
-        const created = await apiJson("/api/chat/chats", "POST", {
-          profile_id: currentProfileId,
-          display_name: name || null,
-        });
-        currentChatId = created.id;
-        await loadChats(currentProfileId);
-        setStatus("Chat created.");
-      } catch (err) {
-        console.error("newChat", err);
-        setStatus("Failed to create chat.", true);
-      }
-    });
-
-    btnRenameChat.addEventListener("click", async () => {
-      if (!currentProfileId || !currentChatId) {
-        setStatus("No chat selected.", true);
-        return;
-      }
-      const name = prompt("New chat name:", "");
-      if (name === null) return;
-      try {
-        await apiJson(`/api/chat/chats/${encodeURIComponent(currentProfileId)}/${encodeURIComponent(currentChatId)}`, "PATCH", {
-          display_name: name || null,
-        });
-        await loadChats(currentProfileId);
-        setStatus("Chat renamed.");
-      } catch (err) {
-        console.error("renameChat", err);
-        setStatus("Failed to rename chat.", true);
-      }
-    });
-
-    btnDeleteChat.addEventListener("click", async () => {
-      if (!currentProfileId || !currentChatId) {
-        setStatus("No chat selected.", true);
-        return;
-      }
-      if (!confirm("Delete this chat and its messages?")) return;
-      try {
-        await apiJson(`/api/chat/chats/${encodeURIComponent(currentProfileId)}/${encodeURIComponent(currentChatId)}`, "DELETE", {});
-        currentChatId = null;
-        await loadChats(currentProfileId);
-        setStatus("Chat deleted.");
-      } catch (err) {
-        console.error("deleteChat", err);
-        setStatus("Failed to delete chat.", true);
-      }
-    });
-
-    // ---- Event wiring ----
-
-    btnSend.addEventListener("click", () => {
-      sendMessage();
-    });
-
+    // Event wiring
+    btnSend.addEventListener("click", sendMessage);
     domComposer.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
@@ -1075,30 +1365,36 @@
       }
     });
 
-    btnSendVision.addEventListener("click", () => {
-      sendVisionMessage();
-    });
+    btnSendVision.addEventListener("click", sendVisionMessage);
 
-    domSmartToggle.addEventListener("change", () => {
-      domModelNameLabel.textContent = domSmartToggle.checked
-        ? (modelsInfo.smart_model || modelsInfo.default_model || "smart-model")
-        : (modelsInfo.default_model || "-");
-    });
+    btnAddProfile.addEventListener("click", createProfile);
+    btnAddChat.addEventListener("click", createChat);
+    btnRenameChat.addEventListener("click", renameChat);
+    btnDeleteChat.addEventListener("click", deleteChat);
 
-    // ---- Init ----
-    (async function init() {
-      try {
-        setStatus("Connecting...");
-        await initModels();
-        await ensureProfileAndChat();
-        setStatus("Ready.");
-        domStatusPillText.textContent = "Server connected";
-      } catch (err) {
-        console.error("init", err);
-        setStatus("Failed to connect to server.", true);
-        domStatusPillText.textContent = "Server error";
+    kbSaveButton.addEventListener("click", () => createKbNote());
+    kbContentInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && e.metaKey) {
+        e.preventDefault();
+        createKbNote();
       }
-    })();
+    });
+    kbSaveLastButton.addEventListener("click", () => {
+      if (!lastAssistantText) {
+        setStatus("No assistant answer in this chat yet.", true);
+        return;
+      }
+      const titleBase = (domChatTitleLabel.textContent || "From chat").trim();
+      const title = `From chat: ${titleBase}`.slice(0, 80);
+      createKbNote(title, lastAssistantText);
+    });
+
+    // Boot
+    bootstrap().catch((err) => {
+      console.error("bootstrap", err);
+      setStatus("Failed to initialize chat UI.", true);
+    });
   </script>
 </body>
+
 </html>
