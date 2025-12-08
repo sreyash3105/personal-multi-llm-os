@@ -6,16 +6,19 @@ Vision pipeline for the local AI assistant.
 
 Separated from main code pipeline so code/study/chat don't depend on it.
 
-HARDNING BASE · Phase 2:
+HARDNING BASE · Phase 2/3:
 - Uses OLLAMA_REQUEST_TIMEOUT_SECONDS for Ollama calls.
 - Limits concurrent vision calls with a simple semaphore.
 - Logs timing + status for each vision run via history_logger.
+- Input/output size guards with transparent truncation notes.
+- Stage-level timeout wrapper + graceful fallback on errors.
 """
 
 import base64
 import threading
 import time
 from typing import Optional
+import concurrent.futures
 
 import requests
 
@@ -27,6 +30,43 @@ from config import (
     MAX_CONCURRENT_HEAVY_REQUESTS,
 )
 from history import history_logger
+
+
+# =========================
+# Size guards (input / output)
+# =========================
+
+# Vision prompts and outputs can be smaller than code, but we still guard them.
+_MAX_INPUT_CHARS_VISION = 4000
+_MAX_OUTPUT_CHARS_VISION = 8000
+
+
+def _truncate_with_notice(text: str, limit: int, label: str) -> str:
+    """
+    Truncate text to `limit` characters and append a transparent note.
+
+    label is a short identifier such as "Input" or "Output".
+    """
+    if not isinstance(text, str):
+        text = str(text or "")
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    return head + f"\n\n[{label} truncated for safety — original content was too long.]"
+
+
+def _sanitize_input_text(text: str) -> str:
+    """
+    Guardrail for incoming user text before building the vision prompt.
+    """
+    return _truncate_with_notice(text or "", _MAX_INPUT_CHARS_VISION, "Input")
+
+
+def _clamp_output_text(text: str) -> str:
+    """
+    Guardrail for model outputs before returning to caller.
+    """
+    return _truncate_with_notice(text or "", _MAX_OUTPUT_CHARS_VISION, "Output")
 
 
 # =========================
@@ -58,6 +98,19 @@ def _log_timing(stage: str, model_name: str, duration_s: float, status: str, err
     except Exception:
         # Logging is best-effort only.
         pass
+
+
+def _run_with_timeout(fn, stage: str, model_name: str):
+    """
+    Stage-level timeout wrapper for vision.
+
+    Even though call_ollama_vision already uses an HTTP timeout, this
+    ensures the stage itself is bounded and cannot hang indefinitely
+    if something goes wrong beneath requests.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn)
+        return future.result(timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS)
 
 
 def call_ollama_vision(
@@ -117,6 +170,8 @@ def run_vision(
     HARDNING BASE:
     - Protected by a semaphore for concurrency control.
     - Timing + status logged to history.
+    - Stage-level timeout wrapper + input/output size guards.
+    - Graceful fallback on errors instead of raising.
     """
     if not image_bytes:
         return "(No image uploaded.)"
@@ -158,6 +213,7 @@ General rules:
     uprompt = user_prompt.strip() if user_prompt else ""
     if not uprompt:
         uprompt = "Describe this image in detail."
+    uprompt = _sanitize_input_text(uprompt)
 
     final_prompt = f"""
 {base_instruction}
@@ -177,16 +233,21 @@ User prompt:
 
     _VISION_SEMAPHORE.acquire()
     try:
-        result = call_ollama_vision(
-            image_bytes=image_bytes,
-            prompt=final_prompt,
-            model_name=model_name,
-        )
-        return result
+        def _call():
+            return call_ollama_vision(
+                image_bytes=image_bytes,
+                prompt=final_prompt,
+                model_name=model_name,
+            )
+
+        result = _run_with_timeout(_call, "vision", effective_model)
+        return _clamp_output_text(result)
     except Exception as e:
         status = "error"
-        error_msg = str(e)
-        raise
+        # Limit error length a bit before logging / returning
+        error_msg = _truncate_with_notice(str(e), 600, "Error")
+        fallback = f"Vision stage failed: {error_msg}"
+        return _clamp_output_text(fallback)
     finally:
         duration = time.monotonic() - start
         _log_timing("vision", effective_model, duration, status, error_msg)

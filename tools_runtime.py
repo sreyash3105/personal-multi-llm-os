@@ -12,6 +12,17 @@ Current status (V3.x with HARDNING BASE Phase 2):
 - Tool execution is:
     - bounded by TOOLS_MAX_RUNTIME_SECONDS (per-call timeout)
     - measured and logged into history as timing entries
+
+V3.4.x — Risk tagging skeleton:
+- Each tool execution (and even failed/disabled lookups) is annotated with
+  a best-effort risk assessment:
+    record["risk"] = {
+      "risk_level": 1..6,
+      "tags": [...],
+      "reasons": "...",
+      "kind": "tool",
+    }
+- This is LOGGING ONLY (no blocking, no auth, no behavior change).
 """
 
 from __future__ import annotations
@@ -23,6 +34,7 @@ from typing import Any, Callable, Dict, Optional
 
 from config import TOOLS_RUNTIME_ENABLED, TOOLS_RUNTIME_LOGGING, TOOLS_MAX_RUNTIME_SECONDS
 from history import history_logger
+from risk import assess_risk
 
 
 @dataclass
@@ -121,6 +133,12 @@ def execute_tool(
              "args": Dict[str, Any],
              "context_provided": bool,
           },
+          "risk": {
+             "risk_level": int,
+             "tags": List[str],
+             "reasons": str,
+             "kind": "tool",
+          },
         }
 
     Behavior:
@@ -134,6 +152,24 @@ def execute_tool(
     """
     args = args or {}
 
+    # ----- Risk tagging (logging only, must never raise) -----
+    try:
+        risk_info = assess_risk(
+            "tool",
+            {
+                "tool": name,
+                "args": args,
+                "context": context,
+            },
+        )
+    except Exception:
+        risk_info = {
+            "risk_level": 1,
+            "tags": [],
+            "reasons": "Risk assessment failed; defaulting to MINOR risk.",
+            "kind": "tool",
+        }
+
     if not TOOLS_RUNTIME_ENABLED:
         record = {
             "ok": False,
@@ -144,6 +180,7 @@ def execute_tool(
                 "args": args,
                 "context_provided": context is not None,
             },
+            "risk": risk_info,
         }
         return record
 
@@ -158,6 +195,7 @@ def execute_tool(
                 "args": args,
                 "context_provided": context is not None,
             },
+            "risk": risk_info,
         }
         return record
 
@@ -190,6 +228,7 @@ def execute_tool(
             "args": args,
             "context_provided": context is not None,
         },
+        "risk": risk_info,
     }
 
     if TOOLS_RUNTIME_LOGGING:

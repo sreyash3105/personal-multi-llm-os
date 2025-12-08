@@ -70,6 +70,21 @@ def _build_rows_html(
             j_raw = ""
             j_err = ""
 
+        # --- Risk info (top-level, for code/study/chat) ---
+        risk = rec.get("risk") if isinstance(rec.get("risk"), dict) else None
+        risk_level = risk.get("risk_level") if risk else None
+        risk_tags = risk.get("tags") if risk else None
+        risk_reasons = risk.get("reasons") if risk else None
+        risk_kind = risk.get("kind") if risk else None
+
+        # --- Tool risk (inside tool_record, e.g. mode == tool_execution) ---
+        tool_record = rec.get("tool_record") if isinstance(rec.get("tool_record"), dict) else None
+        tool_risk = tool_record.get("risk") if (tool_record and isinstance(tool_record.get("risk"), dict)) else None
+        tool_risk_level = tool_risk.get("risk_level") if tool_risk else None
+        tool_risk_tags = tool_risk.get("tags") if tool_risk else None
+        tool_risk_reasons = tool_risk.get("reasons") if tool_risk else None
+        tool_risk_kind = tool_risk.get("kind") if tool_risk else None
+
         # Force everything to safe strings
         prompt_str = str(prompt or "")
         final_str = str(final_output or "")
@@ -91,6 +106,14 @@ def _build_rows_html(
             conf_label = _score_label(confidence)
             confct_label = _score_label(conflict)
 
+        # Risk cell: prefer top-level risk; fallback to tool_risk; else "-"
+        if risk_level is not None:
+            risk_label = _score_label(risk_level)
+        elif tool_risk_level is not None:
+            risk_label = _score_label(tool_risk_level)
+        else:
+            risk_label = "-"
+
         esc_label = _escalation_label(escalated, mode)
 
         coder_escaped = escape(coder_str)
@@ -99,6 +122,27 @@ def _build_rows_html(
         j_raw_escaped = escape(j_raw_str)
         j_err_escaped = escape(j_err_str)
         esc_reason_escaped = escape(esc_reason_str)
+
+        # --- Render risk as compact text blocks for details view ---
+        if risk_level is not None or risk_tags or risk_reasons:
+            risk_block = (
+                f"risk_kind: {escape(str(risk_kind or 'code'))}\n"
+                f"risk_level: {escape(str(risk_level))}\n"
+                f"risk_tags: {escape(str(risk_tags))}\n"
+                f"risk_reasons: {escape(str(risk_reasons or ''))}\n"
+            )
+        else:
+            risk_block = "risk: (no risk info for this record)\n"
+
+        if tool_risk_level is not None or tool_risk_tags or tool_risk_reasons:
+            tool_risk_block = (
+                f"tool_risk_kind: {escape(str(tool_risk_kind or 'tool'))}\n"
+                f"tool_risk_level: {escape(str(tool_risk_level))}\n"
+                f"tool_risk_tags: {escape(str(tool_risk_tags))}\n"
+                f"tool_risk_reasons: {escape(str(tool_risk_reasons or ''))}\n"
+            )
+        else:
+            tool_risk_block = ""
 
         row = f"""
 <tr onclick="toggleDetails('{rec_id}')" class="main-row">
@@ -109,10 +153,11 @@ def _build_rows_html(
   <td>{final_preview}</td>
   <td>{conf_label}</td>
   <td>{confct_label}</td>
+  <td>{risk_label}</td>
   <td>{j_summary_safe}</td>
 </tr>
 <tr id="{rec_id}" class="details-row">
-  <td colspan="8">
+  <td colspan="9">
     <div class="details">
       <div class="block">
         <h3>Prompt</h3>
@@ -140,7 +185,9 @@ raw_response:
 {j_raw_escaped}
 
 parse_error:
-{j_err_escaped}</pre>
+{j_err_escaped}
+
+{risk_block}{tool_risk_block}</pre>
       </div>
     </div>
   </td>
@@ -151,7 +198,7 @@ parse_error:
     if not rows_html:
         return f"""
 <tr>
-  <td colspan="8" style="text-align:center; padding: 24px; color: #9ca3af;">
+  <td colspan="9" style="text-align:center; padding: 24px; color: #9ca3af;">
     {empty_message}
   </td>
 </tr>
@@ -473,6 +520,7 @@ def render_dashboard(limit: int = 50) -> HTMLResponse:
             <th>Final (preview)</th>
             <th>Conf</th>
             <th>Conflic</th>
+            <th>Risk</th>
             <th>Judge summary</th>
           </tr>
         </thead>
@@ -502,6 +550,7 @@ def render_dashboard(limit: int = 50) -> HTMLResponse:
             <th>Final (preview)</th>
             <th>Conf</th>
             <th>Conflic</th>
+            <th>Risk</th>
             <th>Judge summary</th>
           </tr>
         </thead>

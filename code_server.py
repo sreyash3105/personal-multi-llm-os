@@ -1,5 +1,4 @@
-from typing import Tuple, Dict, Any 
-
+from typing import Tuple, Dict, Any
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Form
@@ -26,7 +25,7 @@ from dashboard import render_dashboard
 from vision_pipeline import run_vision
 from chat_ui import router as chat_router
 from tools_runtime import execute_tool
-
+from risk import assess_risk
 
 
 app = FastAPI(title="Local Code, Study & Chat Assistant")
@@ -58,6 +57,7 @@ class StudyResponse(BaseModel):
 class VisionResponse(BaseModel):
     output: str
 
+
 class ToolExecRequest(BaseModel):
     tool: str
     args: Dict[str, Any] | None = None
@@ -68,6 +68,8 @@ class ToolExecResponse(BaseModel):
     tool: str
     result: Any | None = None
     error: str | None = None
+    risk: Dict[str, Any] | None = None
+
 
 # =========================
 # Escalation helpers
@@ -297,6 +299,25 @@ def generate_code(req: CodeRequest):
             reviewer_output = None
             final_output = coder_output
 
+    # ----- Risk tagging for code (logging only) -----
+    try:
+        risk_info = assess_risk(
+            "code",
+            {
+                "mode": mode,
+                "original_prompt": req.prompt,
+                "normalized_prompt": prompt,
+                "final_output": final_output or "",
+            },
+        )
+    except Exception:
+        risk_info = {
+            "risk_level": 1,
+            "tags": [],
+            "reasons": "Risk assessment failed; defaulting to MINOR risk.",
+            "kind": "code",
+        }
+
     # ---- History logging ----
     history_logger.log(
         {
@@ -315,6 +336,7 @@ def generate_code(req: CodeRequest):
                 "raw_response": judge_result.get("raw_response") if judge_result else None,
                 "parse_error": judge_result.get("parse_error") if judge_result else None,
             },
+            "risk": risk_info,
         }
     )
 
@@ -395,6 +417,7 @@ async def vision_endpoint(
         image_bytes=image_bytes,
         user_prompt=prompt or "",
         mode=mode or "auto",
+    
     )
 
     # Log to history for dashboard
@@ -413,6 +436,7 @@ async def vision_endpoint(
     )
 
     return VisionResponse(output=vision_output)
+
 
 # =========================
 # /api/tools/execute endpoint
@@ -443,7 +467,9 @@ def tools_execute(req: ToolExecRequest):
         tool=record.get("tool") or req.tool,
         result=record.get("result"),
         error=record.get("error"),
+        risk=record.get("risk"),
     )
+
 
 # =========================
 # /dashboard endpoint
@@ -478,3 +504,4 @@ def root():
     Root → redirect to chat UI.
     """
     return chat_page()
+

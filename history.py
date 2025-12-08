@@ -7,6 +7,11 @@ HARDNING BASE:
   - JSONL files in HISTORY_DIR/history_*.jsonl  (for backup / inspection)
   - SQLite DB in HISTORY_DIR/history.sqlite3   (for fast querying)
 - load_recent_records() now reads ONLY from SQLite.
+
+Supports arbitrary JSON records, including:
+- code/study/chat/vision traces
+- pipeline timing entries (kind="pipeline_timing")
+- optional profile_id for per-profile views
 """
 
 import json
@@ -52,7 +57,7 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def _init_db() -> None:
-    """Ensure the history SQLite table exists."""
+    """Ensure the history SQLite table (and basic indexes) exist."""
     with _get_conn() as conn:
         conn.execute(
             """
@@ -63,6 +68,15 @@ def _init_db() -> None:
             );
             """
         )
+        # Index to keep ORDER BY ts, id queries fast as the table grows.
+        try:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_history_ts_id ON history_records(ts, id);"
+            )
+        except sqlite3.DatabaseError:
+            # Index creation is best-effort; don't break logging.
+            pass
+
         conn.commit()
 
 
