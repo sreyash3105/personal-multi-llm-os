@@ -3,7 +3,7 @@ risk.py
 
 Lightweight, heuristic risk tagging for the Personal Local AI OS.
 
-Goal (V3.4.x):
+Goal (V3.4.x → float scale):
 - Provide a simple, best-effort risk assessment for:
     - tool executions
     - (later) code generations, system calls, etc.
@@ -12,18 +12,18 @@ Goal (V3.4.x):
 IMPORTANT:
 - This module MUST NOT raise.
 - It MUST NOT block execution.
-- It is purely additive metadata for observability and future V3.5 security work.
+- It is purely additive metadata for observability and security.
 
-Risk levels (aligned with your design, but used here ONLY for tagging/logging):
+Risk levels (used here ONLY for tagging/logging, now as floats):
 
-1 — MINOR          -> effectively safe, normal operations
-2 — LOW            -> slightly sensitive, but usually fine
-3 — MEDIUM         -> potentially impactful (filesystem writes, deletes, etc.)
-4 — MINUTE RISK    -> more dangerous patterns (shell, subprocess, network)
-5 — RISKY          -> highly sensitive / destructive patterns
-6 — TOO MUCH RISKY -> reserved for future strict policies
+1.00 — MINOR          -> effectively safe, normal operations
+2.00 — LOW            -> slightly sensitive, but usually fine
+3.00 — MEDIUM         -> potentially impactful (filesystem writes, deletes, etc.)
+4.00 — MINUTE RISK    -> more dangerous patterns (shell, subprocess, network)
+5.00 — RISKY          -> highly sensitive / destructive patterns
+6.00 — TOO MUCH RISKY -> reserved for future strict policies
 
-For now, this module will mostly emit 1–4.
+For now, this module will mostly emit 1.00–4.00.
 """
 
 from __future__ import annotations
@@ -56,20 +56,22 @@ def _normalize_text(payload: Any) -> str:
 def _heuristic_tags_for_tool(payload_text: str) -> Dict[str, Any]:
     """
     Heuristics for tool executions.
+
     Returns:
         {
-          "risk_level": int,
+          "risk_level": float,   # 1.00–6.00
           "tags": List[str],
           "reasons": str,
         }
     """
-    risk_level = 1
+    # Base: MINOR risk as float
+    risk_level: float = 1.0
     tags: List[str] = []
     reasons: List[str] = []
 
-    text = payload_text
+    text = payload_text or ""
 
-    # Filesystem operations
+    # Filesystem operations → MEDIUM (≥ 3.0)
     fs_keywords = [
         "rm -rf",
         "rm ",
@@ -90,11 +92,11 @@ def _heuristic_tags_for_tool(payload_text: str) -> Dict[str, Any]:
         "drop table",
     ]
     if any(k in text for k in fs_keywords):
-        risk_level = max(risk_level, 3)
+        risk_level = max(risk_level, 3.0)
         tags.append("filesystem")
         reasons.append("Potential filesystem modification (delete/write).")
 
-    # Network / HTTP
+    # Network / HTTP → MEDIUM (≥ 3.0)
     net_keywords = [
         "http://",
         "https://",
@@ -107,11 +109,11 @@ def _heuristic_tags_for_tool(payload_text: str) -> Dict[str, Any]:
         "udp://",
     ]
     if any(k in text for k in net_keywords):
-        risk_level = max(risk_level, 3)
+        risk_level = max(risk_level, 3.0)
         tags.append("network")
         reasons.append("Potential network / HTTP access.")
 
-    # Shell / subprocess
+    # Shell / subprocess → MINUTE RISK (≥ 4.0)
     shell_keywords = [
         "subprocess.",
         "os.system",
@@ -122,11 +124,11 @@ def _heuristic_tags_for_tool(payload_text: str) -> Dict[str, Any]:
         "shell=True",
     ]
     if any(k in text for k in shell_keywords):
-        risk_level = max(risk_level, 4)
+        risk_level = max(risk_level, 4.0)
         tags.append("shell")
         reasons.append("Potential shell / subprocess execution.")
 
-    # System / privileged hints
+    # System / privileged hints → RISKY (≥ 5.0)
     system_keywords = [
         "sudo ",
         "runas ",
@@ -138,15 +140,22 @@ def _heuristic_tags_for_tool(payload_text: str) -> Dict[str, Any]:
         "sc.exe",
     ]
     if any(k in text for k in system_keywords):
-        risk_level = max(risk_level, 5)
+        risk_level = max(risk_level, 5.0)
         tags.append("system")
         reasons.append("Potential privileged / system-level action.")
 
     if not reasons:
-        reasons.append("No sensitive patterns detected; treated as minor risk.")
+        reasons.append("No sensitive patterns detected; treated as MINOR risk.")
+
+    # Clamp explicitly to 1.00–6.00
+    try:
+        risk_level = float(risk_level)
+    except Exception:
+        risk_level = 1.0
+    risk_level = max(1.0, min(6.0, risk_level))
 
     return {
-        "risk_level": int(risk_level),
+        "risk_level": risk_level,
         "tags": sorted(set(tags)),
         "reasons": " ".join(reasons),
     }
@@ -163,7 +172,7 @@ def assess_risk(kind: str, payload: Any) -> Dict[str, Any]:
 
     Returns:
         {
-          "risk_level": int (1–6),
+          "risk_level": float (1.00–6.00),
           "tags": List[str],
           "reasons": str,
           "kind": str,
@@ -175,7 +184,7 @@ def assess_risk(kind: str, payload: Any) -> Dict[str, Any]:
         text = _normalize_text(payload)
         if not text:
             return {
-                "risk_level": 1,
+                "risk_level": 1.0,
                 "tags": [],
                 "reasons": "Empty payload; defaulting to MINOR risk.",
                 "kind": kind,
@@ -189,12 +198,21 @@ def assess_risk(kind: str, payload: Any) -> Dict[str, Any]:
             info = _heuristic_tags_for_tool(text)
 
         info["kind"] = kind
+
+        # Ensure risk_level is always a 1.00–6.00 float even if heuristics changed
+        try:
+            rl = float(info.get("risk_level", 1.0))
+        except Exception:
+            rl = 1.0
+        rl = max(1.0, min(6.0, rl))
+        info["risk_level"] = rl
+
         return info
 
     except Exception:
         # Absolutely must never break callers.
         return {
-            "risk_level": 1,
+            "risk_level": 1.0,
             "tags": [],
             "reasons": "Risk assessment failed; defaulting to MINOR risk.",
             "kind": kind,

@@ -105,6 +105,13 @@ VISION_MODEL_NAME = AVAILABLE_MODELS.get("llava_7b", "llava:7b")
 # Toggle to disable vision quickly if needed
 VISION_ENABLED = True
 
+# ---- Speech-to-text (Whisper / STT) ----
+STT_ENABLED = True
+STT_MODEL_NAME = "small"      # or "base" if you prefer
+STT_ENGINE = "whisper"
+STT_DEVICE = "cuda"           # "cuda" for GPU, "cpu" for CPU
+STT_COMPUTE_TYPE = "float16"  # use "float32" if fp16 causes issues
+
 
 # ---- Tools runtime settings ----
 # Global feature flag: when False, tools are never executed.
@@ -122,6 +129,7 @@ TOOLS_IN_CHAT_ENABLED = True
 #   2) Feed the tool result into the chat model
 #   3) Return a natural language summary instead of raw JSON.
 TOOLS_CHAT_HYBRID_ENABLED = True
+
 # ---- Security enforcement settings (V3.7) ----
 # Global mode for using SecurityEngine + sessions.
 #
@@ -133,7 +141,7 @@ TOOLS_CHAT_HYBRID_ENABLED = True
 SECURITY_ENFORCEMENT_MODE = "off"
 
 # Minimum auth level that triggers enforcement when mode != "off".
-# Auth levels from security_engine.SecurityAuthLevel: :contentReference[oaicite:1]{index=1}
+# Auth levels from security_engine.SecurityAuthLevel:
 #   1 = ALLOW
 #   2 = LOG_ONLY
 #   3 = CONFIRM

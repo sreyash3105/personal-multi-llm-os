@@ -495,6 +495,10 @@ def run_judge(
     Returns a dict with:
         confidence_score, conflict_score, judgement_summary,
         raw_response, parse_error
+
+    Scoring (float-based):
+      - confidence_score: float 0.00–10.00 (higher = better)
+      - conflict_score:   float 0.00–10.00 (higher = more problematic)
     """
     if not JUDGE_ENABLED:
         return {
@@ -517,19 +521,24 @@ You will see:
 - REVIEWER_ANSWER: the final code after the reviewer stage.
 
 Your job:
-1) Rate how confident you are that the final answer is correct, safe, and useful,
-   as an integer 0-10 (higher = better).
-2) Rate how likely it is that the answer is wrong, misleading, unsafe, or incomplete,
-   as an integer 0-10 (higher = more problematic).
-3) Write a short 1-3 sentence explanation summarizing your judgement.
+1) Rate how confident you are that the FINAL answer is correct, safe, and useful,
+   as a FLOAT in the range 0.00–10.00 (higher = better).
+2) Rate how likely it is that the FINAL answer is wrong, misleading, unsafe, or incomplete,
+   as a FLOAT in the range 0.00–10.00 (higher = more problematic).
+3) Write a short 1–3 sentence explanation summarizing your judgement.
 
 Return STRICT JSON ONLY, with NO extra commentary, in this exact shape:
 
-{
-  "confidence_score": <int 0-10>,
-  "conflict_score": <int 0-10>,
-  "judgement_summary": "<short explanation>"
-}
+{{
+  "confidence_score": 8.75,
+  "conflict_score": 2.50,
+  "judgement_summary": "Very likely correct and safe; minor potential edge cases only."
+}}
+
+Rules:
+- "confidence_score" MUST be a number (float), NOT a string.
+- "conflict_score" MUST be a number (float), NOT a string.
+- Do NOT include any extra keys or text outside the JSON object.
 
 USER_REQUEST:
 {original_prompt}
@@ -542,6 +551,23 @@ REVIEWER_ANSWER:
 
 JSON:
 """.strip()
+
+    def _to_float_score(val: Any) -> Optional[float]:
+        """
+        Best-effort conversion to a clamped float in [0.00, 10.00].
+        Returns None if not parseable.
+        """
+        if val is None:
+            return None
+        try:
+            f = float(val)
+        except Exception:
+            return None
+        if f < 0.0:
+            f = 0.0
+        elif f > 10.0:
+            f = 10.0
+        return round(f, 2)
 
     start = time.monotonic()
     status = "ok"
@@ -566,14 +592,8 @@ JSON:
 
         data = json.loads(candidate)
 
-        confidence_score = None
-        conflict_score = None
-        summary = ""
-
-        if data.get("confidence_score") is not None:
-            confidence_score = int(data["confidence_score"])
-        if data.get("conflict_score") is not None:
-            conflict_score = int(data["conflict_score"])
+        confidence_score = _to_float_score(data.get("confidence_score"))
+        conflict_score = _to_float_score(data.get("conflict_score"))
         summary = str(data.get("judgement_summary") or "").strip()
 
         return {
@@ -600,6 +620,7 @@ JSON:
         _HEAVY_SEMAPHORE.release()
         if profile_lock:
             profile_lock.release()
+
 
 
 # =========================

@@ -19,6 +19,20 @@ V3.5 additions (security phase, read-only):
     - auth_level / auth_label / policy / tags
 - Shows tool name for tool_execution records.
 - Everything is read-only: this does NOT change how anything executes.
+
+V3.7 dashboard refresh:
+- Compact summary row + expandable details per record (click row to expand).
+- Summary columns:
+    - timestamp
+    - kind
+    - mode
+    - chat model (if any)
+    - models (telemetry)
+    - judge confidence (0.00–10.00)
+    - judge conflict (0.00–10.00)
+    - risk tags
+    - risk level (1.00–6.00)
+- All scores are treated as floats for display; existing data is preserved.
 """
 
 from __future__ import annotations
@@ -26,10 +40,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Set, Tuple
 from html import escape
 
-from fastapi import APIRouter
-
 from backend.modules.telemetry.history import load_recent_records
-from backend.modules.security.security_sessions import get_active_sessions_for_profile
 
 
 def _safe(val: Any) -> str:
@@ -45,6 +56,25 @@ def _shorten(text: Any, limit: int = 240) -> str:
     if len(s) <= limit:
         return s
     return s[: limit - 3] + "..."
+
+
+def _fmt_score(val: Any, *, default: str = "") -> str:
+    """
+    Format a numeric score as a float with 2 decimals.
+
+    - For judge scores: expected 0.00–10.00
+    - For risk_level: expected 1.00–6.00
+
+    If conversion fails, falls back to string or default.
+    """
+    if val is None or val == "":
+        return default
+    try:
+        f = float(val)
+        return f"{f:.2f}"
+    except Exception:
+        # Preserve whatever came back from the pipeline
+        return str(val)
 
 
 def _collect_mode_and_models(records: List[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
@@ -84,7 +114,7 @@ def render_dashboard(limit: int = 50) -> str:
     for m in models:
         model_options_html += f'<option value="{escape(m)}">{escape(m)}</option>'
 
-    # Build table rows
+    # Build rows (summary + expandable details)
     rows_html_parts: List[str] = []
 
     for idx, rec in enumerate(records):
@@ -92,8 +122,12 @@ def render_dashboard(limit: int = 50) -> str:
         mode = rec.get("mode") or ""
         kind = rec.get("kind") or ""
 
-        original = _shorten(rec.get("original_prompt"))
-        final_output = _shorten(rec.get("final_output"))
+        original_full = rec.get("original_prompt")
+        final_full = rec.get("final_output")
+
+        # Short versions for any list / preview we might want later
+        original_short = _shorten(original_full)
+        final_short = _shorten(final_full)
 
         chat_profile_name = rec.get("chat_profile_name") or rec.get("profile_name") or ""
         chat_id = rec.get("chat_id") or ""
@@ -123,7 +157,8 @@ def render_dashboard(limit: int = 50) -> str:
                 security = sec
                 security_level = sec.get("auth_level", "")
                 security_label = sec.get("auth_label", "")
-                security_policy = sec.get("policy", "")
+                # Prefer explicit policy_name if present
+                security_policy = sec.get("policy_name") or sec.get("policy") or ""
                 tags = sec.get("tags") or []
                 if isinstance(tags, list):
                     security_tags = ", ".join(str(t) for t in tags)
@@ -132,27 +167,33 @@ def render_dashboard(limit: int = 50) -> str:
         if not kind and mode == "tool_execution":
             kind = "tool"
 
-        # -------- Judge fields --------
-        judge_conf = ""
-        judge_conflict = ""
+        # -------- Judge fields (float semantics) --------
+        judge_conf_raw = ""
+        judge_conflict_raw = ""
         judge_summary = ""
+
         if isinstance(judge, dict):
-            judge_conf = judge.get("confidence_score", "")
-            judge_conflict = judge.get("conflict_score", "")
+            judge_conf_raw = judge.get("confidence_score", "")
+            judge_conflict_raw = judge.get("conflict_score", "")
             judge_summary = _shorten(judge.get("judgement_summary"))
 
-        # -------- Risk fields --------
-        risk_level = ""
+        judge_conf = _fmt_score(judge_conf_raw)
+        judge_conflict = _fmt_score(judge_conflict_raw)
+
+        # -------- Risk fields (float semantics, but 1.00–6.00 range) --------
+        risk_level_raw = ""
         risk_tags = ""
         risk_reasons = ""
         if isinstance(risk, dict):
-            risk_level = risk.get("risk_level", "")
+            risk_level_raw = risk.get("risk_level", "")
             tags = risk.get("tags") or []
             if isinstance(tags, list):
                 risk_tags = ", ".join(str(t) for t in tags)
             risk_reasons = _shorten(risk.get("reasons"))
 
-        # Models dictionary
+        risk_level = _fmt_score(risk_level_raw)
+
+        # Models dictionary (telemetry)
         models_dict = rec.get("models") or {}
         if isinstance(models_dict, dict):
             models_text = ", ".join(
@@ -166,7 +207,7 @@ def render_dashboard(limit: int = 50) -> str:
         data_model = escape(str(chat_model_used))
         data_models = escape(models_text)
 
-        # Security summary text (for quick scanning + search)
+        # Security summary for quick glance in expanded view
         if security_policy:
             sec_notes = security_policy
         elif security_tags:
@@ -174,34 +215,83 @@ def render_dashboard(limit: int = 50) -> str:
         else:
             sec_notes = ""
 
-        row_html = f"""
+        # Summary row (clickable)
+        summary_row_html = f"""
         <tr
+          class="summary-row"
+          data-idx="{idx}"
           data-mode="{data_mode}"
           data-model="{data_model}"
           data-models="{data_models}"
         >
           <td>{_safe(ts)}</td>
-          <td>{_safe(mode)}</td>
           <td>{_safe(kind)}</td>
-          <td>{_safe(chat_profile_name)}</td>
-          <td>{_safe(chat_id)}</td>
+          <td>{_safe(mode)}</td>
           <td>{_safe(chat_model_used)}</td>
           <td>{_safe(models_text)}</td>
-          <td class="mono">{_safe(original)}</td>
-          <td class="mono">{_safe(final_output)}</td>
           <td>{_safe(judge_conf)}</td>
           <td>{_safe(judge_conflict)}</td>
-          <td class="mono">{_safe(judge_summary)}</td>
-          <td>{_safe(risk_level)}</td>
           <td class="mono">{_safe(risk_tags)}</td>
-          <td class="mono">{_safe(risk_reasons)}</td>
-          <td>{_safe(tool_name)}</td>
-          <td>{_safe(security_level)}</td>
-          <td class="mono">{_safe(security_label)}</td>
-          <td class="mono">{_safe(sec_notes)}</td>
+          <td>{_safe(risk_level)}</td>
         </tr>
         """
-        rows_html_parts.append(row_html)
+
+        # Detail row (hidden by default, toggled via JS)
+        detail_row_html = f"""
+        <tr class="detail-row" data-idx="{idx}" style="display:none;">
+          <td colspan="9">
+            <div class="detail-container">
+              <div class="detail-meta">
+                <div><strong>Profile:</strong> {_safe(chat_profile_name) or "-"}</div>
+                <div><strong>Chat ID:</strong> {_safe(chat_id) or "-"}</div>
+              </div>
+
+              <div class="detail-grid">
+                <div class="detail-section">
+                  <div class="detail-title">Original prompt</div>
+                  <pre class="mono detail-pre">{_safe(original_full)}</pre>
+                </div>
+                <div class="detail-section">
+                  <div class="detail-title">Final output</div>
+                  <pre class="mono detail-pre">{_safe(final_full)}</pre>
+                </div>
+              </div>
+
+              <div class="detail-grid">
+                <div class="detail-section">
+                  <div class="detail-title">Judge</div>
+                  <div class="detail-kv"><span>Confidence:</span> <span>{_safe(judge_conf)}</span></div>
+                  <div class="detail-kv"><span>Conflict:</span> <span>{_safe(judge_conflict)}</span></div>
+                  <div class="detail-kv"><span>Summary:</span> <span>{_safe(judge_summary)}</span></div>
+                </div>
+                <div class="detail-section">
+                  <div class="detail-title">Risk</div>
+                  <div class="detail-kv"><span>Level:</span> <span>{_safe(risk_level)}</span></div>
+                  <div class="detail-kv"><span>Tags:</span> <span>{_safe(risk_tags)}</span></div>
+                  <div class="detail-kv"><span>Reasons:</span> <span>{_safe(risk_reasons)}</span></div>
+                </div>
+              </div>
+
+              <div class="detail-grid">
+                <div class="detail-section">
+                  <div class="detail-title">Models (telemetry)</div>
+                  <pre class="mono detail-pre">{_safe(models_text)}</pre>
+                </div>
+                <div class="detail-section">
+                  <div class="detail-title">Tool / Security</div>
+                  <div class="detail-kv"><span>Tool:</span> <span>{_safe(tool_name)}</span></div>
+                  <div class="detail-kv"><span>Sec level:</span> <span>{_safe(security_level)}</span></div>
+                  <div class="detail-kv"><span>Sec label:</span> <span>{_safe(security_label)}</span></div>
+                  <div class="detail-kv"><span>Sec notes:</span> <span>{_safe(sec_notes)}</span></div>
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+        """
+
+        rows_html_parts.append(summary_row_html)
+        rows_html_parts.append(detail_row_html)
 
     rows_html = "\n".join(rows_html_parts)
 
@@ -215,7 +305,7 @@ def render_dashboard(limit: int = 50) -> str:
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       margin: 0;
       padding: 0;
-      background: #0b0c10;
+      background: #020617;
       color: #f5f5f5;
     }}
     header {{
@@ -251,7 +341,7 @@ def render_dashboard(limit: int = 50) -> str:
       opacity: 0.85;
     }}
     select, input[type="text"] {{
-      background: #11141c;
+      background: #020617;
       border-radius: 6px;
       border: 1px solid #2b2f3a;
       color: #f5f5f5;
@@ -275,55 +365,94 @@ def render_dashboard(limit: int = 50) -> str:
     }}
     th {{
       text-align: left;
-      background: #11141c;
+      background: #020617;
       position: sticky;
       top: 0;
       z-index: 1;
     }}
-    tbody tr:nth-child(even) {{
-      background: #10131a;
+    tbody tr.summary-row:nth-child(4n+1),
+    tbody tr.summary-row:nth-child(4n+3) {{
+      background: #020617;
     }}
-    tbody tr:nth-child(odd) {{
-      background: #0c0f15;
-    }}
-    tbody tr:hover {{
-      background: #1b2230;
+    tbody tr.summary-row:hover {{
+      background: #0f172a;
+      cursor: pointer;
     }}
     .mono {{
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
       white-space: pre-wrap;
       word-wrap: break-word;
     }}
-    .pill {{
-      display: inline-block;
-      padding: 2px 6px;
-      border-radius: 999px;
-      border: 1px solid #333745;
-      font-size: 10px;
-      opacity: 0.85;
-    }}
-    .pill.mode {{
-      background: #151b28;
-    }}
-    .pill.model {{
-      background: #152820;
-    }}
-    .pill.risk-high {{
-      background: #3b1a1a;
-      border-color: #e57373;
-    }}
-    .pill.risk-medium {{
-      background: #332a13;
-      border-color: #ffb74d;
-    }}
-    .pill.risk-low {{
-      background: #12261b;
-      border-color: #81c784;
-    }}
     .toolbar-note {{
       font-size: 11px;
       opacity: 0.7;
       margin-left: 4px;
+    }}
+    .detail-row td {{
+      background: #020617;
+      border-top: none;
+      border-bottom: 1px solid #111827;
+    }}
+    .detail-container {{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 11px;
+    }}
+    .detail-meta {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      opacity: 0.85;
+    }}
+    .detail-grid {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 8px;
+    }}
+    @media (max-width: 900px) {{
+      .detail-grid {{
+        grid-template-columns: minmax(0, 1fr);
+      }}
+    }}
+    .detail-section {{
+      border-radius: 8px;
+      border: 1px solid #1f2937;
+      padding: 6px 8px;
+      background: #020617;
+    }}
+    .detail-title {{
+      font-size: 11px;
+      font-weight: 600;
+      margin-bottom: 4px;
+      color: #e5e7eb;
+    }}
+    .detail-pre {{
+      margin: 0;
+      max-height: 220px;
+      overflow-y: auto;
+      font-size: 11px;
+    }}
+    .detail-kv {{
+      display: flex;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 10px;
+      margin-bottom: 2px;
+    }}
+    .detail-kv span:first-child {{
+      opacity: 0.75;
+    }}
+    .summary-row td:first-child::before {{
+      content: "▸";
+      display: inline-block;
+      margin-right: 4px;
+      opacity: 0.6;
+      transition: transform 0.15s ease;
+    }}
+    .summary-row.expanded td:first-child::before {{
+      transform: rotate(90deg);
+      opacity: 0.9;
     }}
   </style>
 </head>
@@ -357,32 +486,22 @@ def render_dashboard(limit: int = 50) -> str:
         />
       </label>
       <span class="toolbar-note">
-        Filters are client-side only (no extra load on backend).
+        Click a row to expand details. Filters are client-side only.
       </span>
     </div>
     <div style="overflow-x:auto; max-height: calc(100vh - 120px);">
       <table id="recordsTable">
         <thead>
           <tr>
-            <th style="width:120px;">Timestamp</th>
-            <th style="width:90px;">Mode</th>
+            <th style="width:130px;">Timestamp</th>
             <th style="width:70px;">Kind</th>
-            <th style="width:120px;">Profile</th>
-            <th style="width:80px;">Chat ID</th>
-            <th style="width:110px;">Chat Model</th>
-            <th style="width:150px;">Models (telemetry)</th>
-            <th style="width:260px;">Original Prompt</th>
-            <th style="width:260px;">Final Output</th>
-            <th style="width:60px;">Judge&nbsp;Conf</th>
-            <th style="width:60px;">Judge&nbsp;Conflicts</th>
-            <th style="width:220px;">Judge Summary</th>
+            <th style="width:90px;">Mode</th>
+            <th style="width:120px;">Chat Model</th>
+            <th style="width:160px;">Models (telemetry)</th>
+            <th style="width:80px;">Judge Conf</th>
+            <th style="width:90px;">Judge Conflict</th>
+            <th style="width:180px;">Risk Tags</th>
             <th style="width:70px;">Risk Level</th>
-            <th style="width:140px;">Risk Tags</th>
-            <th style="width:220px;">Risk Reasons</th>
-            <th style="width:120px;">Tool</th>
-            <th style="width:80px;">Sec Level</th>
-            <th style="width:140px;">Sec Label</th>
-            <th style="width:220px;">Sec Notes</th>
           </tr>
         </thead>
         <tbody>
@@ -404,13 +523,23 @@ def render_dashboard(limit: int = 50) -> str:
         return (s || '').toString().toLowerCase();
       }}
 
+      function getSummaryRows() {{
+        return Array.from(tbody.querySelectorAll('tr.summary-row'));
+      }}
+
+      function getDetailRowFor(summaryRow) {{
+        const idx = summaryRow.getAttribute('data-idx');
+        if (!idx) return null;
+        return tbody.querySelector('tr.detail-row[data-idx="' + idx + '"]');
+      }}
+
       function applyFilters() {{
         const modeValue = modeFilter.value;
         const modelValue = modelFilter.value;
         const searchValue = normalize(searchInput.value);
 
-        const rows = tbody.querySelectorAll('tr');
-        rows.forEach(row => {{
+        const summaryRows = getSummaryRows();
+        summaryRows.forEach(row => {{
           const rowMode = row.getAttribute('data-mode') || '';
           const rowModel = row.getAttribute('data-model') || '';
           const rowModels = row.getAttribute('data-models') || '';
@@ -422,7 +551,8 @@ def render_dashboard(limit: int = 50) -> str:
           }}
 
           if (visible && modelValue) {{
-            if (rowModel !== modelValue && !rowModels.split(',').some(m => m.trim() === modelValue)) {{
+            const modelsList = rowModels.split(',').map(m => m.trim()).filter(Boolean);
+            if (rowModel !== modelValue && !modelsList.includes(modelValue)) {{
               visible = false;
             }}
           }}
@@ -434,9 +564,33 @@ def render_dashboard(limit: int = 50) -> str:
             }}
           }}
 
+          const detailRow = getDetailRowFor(row);
           row.style.display = visible ? '' : 'none';
+          if (detailRow) {{
+            // Hide detail row if summary is hidden
+            detailRow.style.display = (visible && row.classList.contains('expanded')) ? '' : 'none';
+          }}
         }});
       }}
+
+      function toggleRow(summaryRow) {{
+        const detailRow = getDetailRowFor(summaryRow);
+        if (!detailRow) return;
+        const isExpanded = summaryRow.classList.contains('expanded');
+        if (isExpanded) {{
+          summaryRow.classList.remove('expanded');
+          detailRow.style.display = 'none';
+        }} else {{
+          summaryRow.classList.add('expanded');
+          detailRow.style.display = '';
+        }}
+      }}
+
+      tbody.addEventListener('click', (e) => {{
+        const tr = e.target.closest('tr.summary-row');
+        if (!tr) return;
+        toggleRow(tr);
+      }});
 
       modeFilter.addEventListener('change', applyFilters);
       modelFilter.addEventListener('change', applyFilters);
@@ -453,6 +607,9 @@ def render_dashboard(limit: int = 50) -> str:
 # SECURITY SESSIONS PANEL (V3.6)
 # ==========================================
 # Read-only endpoint — does not affect runtime or telemetry.
+
+from fastapi import APIRouter
+from backend.modules.security.security_sessions import get_active_sessions_for_profile
 
 security_router = APIRouter()
 
@@ -477,6 +634,4 @@ def dashboard_security_sessions(profile_id: str, include_expired: bool = False):
         }
 
 
-# Do NOT reference `app` here. Just expose the router.
-# code_server.py will include: app.include_router(security_router)
 __all__ = ["security_router", "render_dashboard"]

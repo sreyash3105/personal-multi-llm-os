@@ -28,6 +28,8 @@ from backend.core.config import (
     JUDGE_ENABLED,
     STUDY_MODEL_NAME,
     VISION_MODEL_NAME,
+    STT_ENABLED,       # 🟢 NEW
+    STT_MODEL_NAME,    # 🟢 NEW
 )
 from backend.modules.telemetry.dashboard import render_dashboard, security_router
 from backend.modules.vision.vision_pipeline import run_vision
@@ -35,7 +37,7 @@ from backend.modules.chat.chat_ui import router as chat_router
 from backend.modules.tools.tools_runtime import execute_tool
 from backend.modules.telemetry.risk import assess_risk
 from backend.modules.security.security_sessions import create_security_session
-
+from backend.modules.stt.stt_router import stt_router # 🟢 NEW
 
 # =========================
 # FastAPI app
@@ -45,7 +47,7 @@ app = FastAPI(title="Local Code, Study & Chat Assistant")
 
 # Mount chat router (provides /api/chat*, including vision-in-chat)
 app.include_router(chat_router)
-
+app.include_router(stt_router)
 # Mount security dashboard API router
 app.include_router(security_router)
 
@@ -73,6 +75,9 @@ class StudyResponse(BaseModel):
 class VisionResponse(BaseModel):
     output: str
 
+class STTResponse(BaseModel):
+    text: str
+    language: str | None = None
 
 class ToolExecRequest(BaseModel):
     tool: str
@@ -91,29 +96,46 @@ class ToolExecResponse(BaseModel):
 # Escalation helpers
 # =========================
 
+# =========================
+# Escalation helpers
+# =========================
+
 def should_escalate(judge_result: Dict[str, Any]) -> Tuple[bool, str]:
     """
     Decide whether to escalate based on judge scores.
     Returns (escalate: bool, reason: str).
+
+    Scores expected on a 0.00–10.00 float scale:
+      - confidence_score (lower → worse)
+      - conflict_score   (higher → worse)
     """
     if not judge_result:
         return False, ""
 
+    reasons: list[str] = []
+
+    # Confidence threshold check
     cs = judge_result.get("confidence_score")
-    cf = judge_result.get("conflict_score")
-
-    reasons = []
-
     try:
-        if cs is not None and int(cs) < ESCALATION_CONFIDENCE_THRESHOLD:
-            reasons.append(f"low confidence ({cs})")
+        if cs is not None:
+            cs_val = float(cs)
+            thresh = float(ESCALATION_CONFIDENCE_THRESHOLD)
+            if cs_val < thresh:
+                reasons.append(f"low confidence ({cs_val:.2f} < {thresh:.2f})")
     except Exception:
+        # Parsing failed; ignore confidence dimension
         pass
 
+    # Conflict threshold check
+    cf = judge_result.get("conflict_score")
     try:
-        if cf is not None and int(cf) > ESCALATION_CONFLICT_THRESHOLD:
-            reasons.append(f"high conflict ({cf})")
+        if cf is not None:
+            cf_val = float(cf)
+            thresh = float(ESCALATION_CONFLICT_THRESHOLD)
+            if cf_val > thresh:
+                reasons.append(f"high conflict ({cf_val:.2f} > {thresh:.2f})")
     except Exception:
+        # Parsing failed; ignore conflict dimension
         pass
 
     if not reasons:
@@ -124,19 +146,22 @@ def should_escalate(judge_result: Dict[str, Any]) -> Tuple[bool, str]:
 
 def inject_escalation_comment(code: str, reason: str) -> str:
     """
-    Add a small comment at the top of the final code when escalation happened.
-    Uses a '#' comment for now (Python/shell style, harmless in most languages).
+    Add a comment at the top of the final code when escalation happened.
+    Uses '#' because it's safe (shell/Python) and ignored by most languages.
     """
     if not code:
         return code
 
-    comment = f"# ESCALATION: {reason or 'auto-escalated to heavy review'}"
+    reason = reason or "auto-escalated to heavy review"
+    comment = f"# ESCALATION: {reason}"
 
     stripped = code.lstrip()
     if stripped.startswith(comment):
         return code
 
-    return comment + "\n" + code
+    # preserve original newlines
+    return f"{comment}\n{code}"
+
 
 
 # =========================
@@ -498,8 +523,6 @@ def tools_execute(req: ToolExecRequest):
         error=record.get("error"),
         risk=record.get("risk"),
     )
-
-
 
 
 # =====================================================
