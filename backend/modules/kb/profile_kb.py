@@ -17,9 +17,9 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-# DB file lives in the same directory as this script, under "data/"
-BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
+# DB file lives under the project root data/ folder
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = PROJECT_ROOT / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = DATA_DIR / "profile_kb.sqlite3"

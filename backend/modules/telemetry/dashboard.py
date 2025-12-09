@@ -26,7 +26,10 @@ from __future__ import annotations
 from typing import Any, Dict, List, Set, Tuple
 from html import escape
 
-from history import load_recent_records
+from fastapi import APIRouter
+
+from backend.modules.telemetry.history import load_recent_records
+from backend.modules.security.security_sessions import get_active_sessions_for_profile
 
 
 def _safe(val: Any) -> str:
@@ -444,15 +447,15 @@ def render_dashboard(limit: int = 50) -> str:
 </html>
 """
     return html
+
+
 # ==========================================
 # SECURITY SESSIONS PANEL (V3.6)
 # ==========================================
 # Read-only endpoint — does not affect runtime or telemetry.
 
-from fastapi import APIRouter
-from security_sessions import get_active_sessions_for_profile
-
 security_router = APIRouter()
+
 
 @security_router.get("/api/dashboard/security_sessions")
 def dashboard_security_sessions(profile_id: str, include_expired: bool = False):
@@ -473,6 +476,7 @@ def dashboard_security_sessions(profile_id: str, include_expired: bool = False):
             "profile_id": profile_id,
         }
 
+
 # Do NOT reference `app` here. Just expose the router.
 # code_server.py will include: app.include_router(security_router)
-__all__ = ["security_router"]
+__all__ = ["security_router", "render_dashboard"]

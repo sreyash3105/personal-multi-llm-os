@@ -25,15 +25,15 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from config import (
+from backend.core.config import (
     OLLAMA_URL,
     VISION_MODEL_NAME,
     VISION_ENABLED,
     OLLAMA_REQUEST_TIMEOUT_SECONDS,
     MAX_CONCURRENT_HEAVY_REQUESTS,
 )
-from history import history_logger
-from timeout_policy import run_with_retries
+from backend.modules.telemetry.history import history_logger
+from backend.modules.common.timeout_policy import run_with_retries
 
 
 # =========================

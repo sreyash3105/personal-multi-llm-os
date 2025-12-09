@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Tuple, Dict, Any
 from pathlib import Path
 
@@ -5,7 +7,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from pipeline import (
+from backend.modules.code.pipeline import (
     run_coder,
     run_reviewer,
     run_judge,
@@ -14,8 +16,8 @@ from pipeline import (
     build_history_context,
     extract_study_style_and_prompt,
 )
-from history import history_logger
-from config import (
+from backend.modules.telemetry.history import history_logger
+from backend.core.config import (
     ESCALATION_ENABLED,
     ESCALATION_CONFIDENCE_THRESHOLD,
     ESCALATION_CONFLICT_THRESHOLD,
@@ -27,22 +29,25 @@ from config import (
     STUDY_MODEL_NAME,
     VISION_MODEL_NAME,
 )
-from dashboard import render_dashboard
-from vision_pipeline import run_vision
-from chat_ui import router as chat_router
-from tools_runtime import execute_tool
-from risk import assess_risk
-from security_sessions import create_security_session  # NEW: V3.5 security sessions
+from backend.modules.telemetry.dashboard import render_dashboard, security_router
+from backend.modules.vision.vision_pipeline import run_vision
+from backend.modules.chat.chat_ui import router as chat_router
+from backend.modules.tools.tools_runtime import execute_tool
+from backend.modules.telemetry.risk import assess_risk
+from backend.modules.security.security_sessions import create_security_session
 
+
+# =========================
+# FastAPI app
+# =========================
 
 app = FastAPI(title="Local Code, Study & Chat Assistant")
 
 # Mount chat router (provides /api/chat*, including vision-in-chat)
 app.include_router(chat_router)
 
-from dashboard import security_router
+# Mount security dashboard API router
 app.include_router(security_router)
-
 
 
 # =========================
@@ -495,6 +500,8 @@ def tools_execute(req: ToolExecRequest):
     )
 
 
+
+
 # =====================================================
 # 🔐 NEW — /api/security/auth  (V3.5 security system)
 # =====================================================
@@ -569,9 +576,11 @@ def dashboard(limit: int = 50):
 @app.get("/chat", response_class=HTMLResponse)
 def chat_page():
     """
-    Serve the static multi-profile chat UI (static/chat.html).
+    Serve the static multi-profile chat UI (project_root/static/chat.html).
     """
-    html_path = Path(__file__).parent / "static" / "chat.html"
+    # backend/code_server.py -> project root -> static/chat.html
+    project_root = Path(__file__).resolve().parent.parent
+    html_path = project_root / "static" / "chat.html"
     if not html_path.exists():
         return HTMLResponse("<h2>chat.html not found</h2>", status_code=500)
     return HTMLResponse(html_path.read_text(encoding="utf-8"))

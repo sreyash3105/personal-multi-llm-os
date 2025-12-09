@@ -68,8 +68,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data" / "chat"
+# Chat DB should live under project_root/data/chat
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = PROJECT_ROOT / "data" / "chat"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "chat.db"
 
 

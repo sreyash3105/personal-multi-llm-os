@@ -27,7 +27,8 @@ from collections import deque
 from dataclasses import dataclass, asdict, field
 from typing import Any, Deque, Dict, List, Optional
 
-from history import history_logger
+from backend.modules.telemetry.history import history_logger
+
 
 
 @dataclass

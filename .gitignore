@@ -1,41 +1,37 @@
-# ============================
+# ====================================
 # 🔒 PRIVACY — DO NOT PUBLISH
-# ============================
+# ====================================
 
 # Databases / logs / chat history / personal memory
-data/**
-history/**
+data/
+history/
 *.sqlite3
 *.jsonl
 
-# Anything generated automatically
-logs/**
-outputs/**
-cache/**
+# Generated automatically
+logs/
+outputs/
+cache/
+tmp/
 
-# ============================
+# ====================================
 # 📄 INTERNAL DOCUMENTATION
-# ============================
+# ====================================
 
-# Hide everything in docs except the public readme
+# Hide everything in docs EXCEPT public readme
 docs/**
-!docs/readme
+!docs/public_readme.md
 
-# Hide internal scratch / legacy / backups
-legacy/**
-RANDOM CODE SNIPPETS
-*.backup.md
-*.draft.md
+# Handover / session / reports
+handover/
+sessions/
+reports/
+legacy/
+scratch/
 
-# Handover / session documents (if they ever exist)
-docs/handover/**
-handover/**
-sessions/**
-reports/**
-
-# ============================
+# ====================================
 # 🧠 Python + Environment garbage
-# ============================
+# ====================================
 
 __pycache__/
 *.pyc
@@ -46,10 +42,9 @@ __pycache__/
 venv/
 .DS_Store
 
-# Jupyter / temp
+# Jupyter / temporary files
 .ipynb_checkpoints/
 *.tmp
 *.log
-RANDOM CODE SNIPPETS*
-docs/
-legacy/
+*.backup.md
+*.draft.md

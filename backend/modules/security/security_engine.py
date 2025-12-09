@@ -44,7 +44,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 try:
     # Optional: use config if available, but fall back safely if not.
-    import config as _config  # type: ignore
+    import backend.core.config as _config  # type: ignore
 except Exception:  # pragma: no cover - defensive
     _config = None  # type: ignore
 
@@ -388,7 +388,8 @@ class SecurityEngine:
 # Only logs + returns event payload so dashboard and chat UI can react.
 
 from typing import Optional
-from security_sessions import get_best_session_for_scope
+from backend.modules.security.security_sessions import get_best_session_for_scope
+
 
 def security_evaluate_operation(
     *,

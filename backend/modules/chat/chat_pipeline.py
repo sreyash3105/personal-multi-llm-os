@@ -31,22 +31,23 @@ import time
 import threading
 from typing import Any, Dict, List, Optional
 
-from config import (
+from backend.core.config import (
     SMART_CHAT_MODEL_NAME,
     MAX_CONCURRENT_HEAVY_REQUESTS,
     OLLAMA_REQUEST_TIMEOUT_SECONDS,
 )
-from prompts import CHAT_SYSTEM_PROMPT
-from pipeline import call_ollama
-from history import history_logger
-from timeout_policy import run_with_retries
-from queue_manager import (
+from backend.modules.code.prompts import CHAT_SYSTEM_PROMPT
+from backend.modules.code.pipeline import call_ollama
+from backend.modules.telemetry.history import history_logger
+from backend.modules.common.timeout_policy import run_with_retries
+from backend.modules.jobs.queue_manager import (
     enqueue_job,
     try_acquire_next_job,
     get_job,
     mark_job_done,
     mark_job_failed,
 )
+
 
 
 # =========================

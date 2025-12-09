@@ -59,11 +59,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # DB location (separate from chat/history DBs)
-BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
+# Always store DB in <project_root>/data/ regardless of this file's location.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = PROJECT_ROOT / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-DB_PATH = DATA_DIR / "security_sessions.sqlite3"
+DB_PATH = DATA_DIR / "security_sessions.sqlite"
 
 
 # =========================

@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, UploadFile, File, Form, Query, HTTPException
 from pydantic import BaseModel
 
-from config import (
+from backend.core.config import (
     CHAT_MODEL_NAME,
     SMART_CHAT_MODEL_NAME,
     AVAILABLE_MODELS,
@@ -30,9 +30,10 @@ from config import (
     TOOLS_CHAT_HYBRID_ENABLED,
     VISION_MODEL_NAME,
 )
-from history import history_logger
-from pipeline import call_ollama
-from profile_kb import (
+from backend.modules.telemetry.history import history_logger
+from backend.modules.code.pipeline import call_ollama
+from backend.modules.code.prompts import CHAT_SYSTEM_PROMPT
+from backend.modules.kb.profile_kb import (
     build_profile_context,
     build_profile_preview,
     add_snippet,
@@ -40,10 +41,10 @@ from profile_kb import (
     get_snippet,
     search_snippets,
 )
-from tools_runtime import execute_tool
-from chat_pipeline import run_chat_smart
-from vision_pipeline import run_vision
-from chat_storage import (
+from backend.modules.tools.tools_runtime import execute_tool
+from backend.modules.chat.chat_pipeline import run_chat_smart
+from backend.modules.vision.vision_pipeline import run_vision
+from backend.modules.chat.chat_storage import (
     list_profiles,
     create_profile,
     rename_profile,
@@ -59,7 +60,11 @@ from chat_storage import (
     get_messages,
     append_message,
 )
-from io_guards import sanitize_chat_input, clamp_chat_output, clamp_tool_output
+from backend.modules.common.io_guards import (
+    sanitize_chat_input,
+    clamp_chat_output,
+    clamp_tool_output,
+)
 
 router = APIRouter()
 
@@ -338,8 +343,6 @@ def _maybe_handle_tool_command(
         }
 
     # Hybrid: ask chat model to summarize tool_result for the user
-    from prompts import CHAT_SYSTEM_PROMPT
-
     summary_prompt = """
 %s
 
@@ -657,8 +660,6 @@ def api_chat(req: ChatRequest):
     messages = get_messages(profile_id, chat_id)
 
     context_block = build_profile_context(profile_id, safe_prompt, max_snippets=8)
-
-    from prompts import CHAT_SYSTEM_PROMPT
 
     base_model_name = _resolve_model(profile, chat_meta)
     profile_name = profile.get("display_name") or profile_id

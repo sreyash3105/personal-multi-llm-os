@@ -63,18 +63,18 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, List, Set
 
-from config import (
+from backend.core.config import (
     TOOLS_RUNTIME_ENABLED,
     TOOLS_RUNTIME_LOGGING,
     TOOLS_MAX_RUNTIME_SECONDS,
     SECURITY_ENFORCEMENT_MODE,
     SECURITY_MIN_ENFORCED_LEVEL,
 )
-from history import history_logger
-from risk import assess_risk
-from io_guards import clamp_tool_output  # shared output clamp for logging
-from security_engine import SecurityEngine, SecurityAuthLevel
-from security_sessions import consume_security_session_if_allowed
+from backend.modules.telemetry.history import history_logger
+from backend.modules.telemetry.risk import assess_risk
+from backend.modules.common.io_guards import clamp_tool_output  # shared output clamp for logging
+from backend.modules.security.security_engine import SecurityEngine, SecurityAuthLevel
+from backend.modules.security.security_sessions import consume_security_session_if_allowed
 
 
 @dataclass
@@ -539,6 +539,8 @@ register_tool(
     },
     func=_ping_tool,
 )
+
+
 # ==========================================
 # SECURITY ENFORCEMENT EXTENSION (V3.6)
 # ==========================================
@@ -550,7 +552,11 @@ register_tool(
 # If a tool requires approval and no active session exists:
 # return a soft rejection that frontend can convert to popup.
 
-from security_sessions import sec_check_or_consume, sec_has_tool_wildcard
+from backend.modules.security.security_sessions import (
+    sec_check_or_consume,
+    sec_has_tool_wildcard,
+)
+
 
 def security_gate_for_tool(
     *,
@@ -570,7 +576,7 @@ def security_gate_for_tool(
 
     # wildcard approval covers all tools (approved once for the profile)
     if sec_has_tool_wildcard(profile_id=profile_id, required_level=required_level):
-        return { "ok": True, "scope": "tool:*", "mode": "wildcard" }
+        return {"ok": True, "scope": "tool:*", "mode": "wildcard"}
 
     # scope-specific session (either peek or consume)
     sess = sec_check_or_consume(
@@ -587,7 +593,7 @@ def security_gate_for_tool(
             "mode": "session",
             "session_id": sess.get("id"),
             "remaining_uses": max(0, sess.get("max_uses", 1) - sess.get("used_count", 0)),
-            "expires_at": sess.get("expires_at")
+            "expires_at": sess.get("expires_at"),
         }
 
     # No session = block (soft mode)

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 import sqlite3
 
-from config import HISTORY_DIR, HISTORY_MAX_ENTRIES
+from backend.core.config import HISTORY_DIR, HISTORY_MAX_ENTRIES
 
 
 # =========================

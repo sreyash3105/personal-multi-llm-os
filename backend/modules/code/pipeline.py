@@ -25,7 +25,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import requests
 
-from config import (
+from backend.core.config import (
     OLLAMA_URL,
     CODER_MODEL_NAME,
     REVIEWER_MODEL_NAME,
@@ -37,9 +37,13 @@ from config import (
     OLLAMA_REQUEST_TIMEOUT_SECONDS,
     MAX_CONCURRENT_HEAVY_REQUESTS,
 )
-from prompts import REVIEWER_SYSTEM_PROMPT, JUDGE_SYSTEM_PROMPT, STUDY_SYSTEM_PROMPT
-from timeout_policy import run_with_retries
-from history import load_recent_records, history_logger
+from backend.modules.code.prompts import (
+    REVIEWER_SYSTEM_PROMPT,
+    JUDGE_SYSTEM_PROMPT,
+    STUDY_SYSTEM_PROMPT,
+)
+from backend.modules.common.timeout_policy import run_with_retries
+from backend.modules.telemetry.history import load_recent_records, history_logger
 
 
 # =========================
