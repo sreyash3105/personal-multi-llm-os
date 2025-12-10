@@ -648,6 +648,34 @@
       font-size: 9px;
       color: var(--text-softer);
     }
+
+    /* Small helpers for mic UI */
+    .mic-btn {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--border-subtle);
+      background: linear-gradient(180deg, rgba(15,23,42,0.96), rgba(10,14,20,0.96));
+      cursor: pointer;
+      color: var(--text-main);
+      font-size: 18px;
+    }
+
+    .mic-btn.recording {
+      background: linear-gradient(90deg, rgba(220,38,38,0.16), rgba(220,38,38,0.06));
+      border-color: rgba(248,113,113,0.6);
+      box-shadow: 0 6px 18px rgba(220,38,38,0.12);
+    }
+
+    .mic-timer {
+      font-size: 11px;
+      color: var(--text-softer);
+      text-align: center;
+      margin-top: 2px;
+    }
   </style>
 </head>
 
@@ -735,6 +763,12 @@
             <textarea id="composer-input" class="composer-text" rows="2"
               placeholder="Ask your assistant. (type ///tool ping + Enter for tools, Shift+Enter for newline)"></textarea>
             <div class="composer-actions">
+              <!-- Mic button integrated here -->
+              <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
+                <button id="mic-btn" class="mic-btn" title="Record with your microphone">🎤</button>
+                <div id="mic-timer" class="mic-timer" aria-live="polite"></div>
+              </div>
+
               <button class="btn btn-primary" id="btn-send">Send</button>
             </div>
           </div>
@@ -846,7 +880,7 @@
   </div>
 
   <script>
-    const API_BASE = "";
+    const API_BASE = ""; // same origin by default; adjust to your host if needed, e.g. "http://localhost:6969"
 
     let modelsInfo = {
       default_model: null,
@@ -893,6 +927,15 @@
     const btnRenameChat = document.getElementById("btn-rename-chat");
     const btnDeleteChat = document.getElementById("btn-delete-chat");
 
+    // Mic UI
+    const micBtn = document.getElementById("mic-btn");
+    const micTimerEl = document.getElementById("mic-timer");
+
+    let mediaRecorder = null;
+    let recordedChunks = [];
+    let recordingStart = null;
+    let recordingInterval = null;
+
     function setStatus(text, isError = false) {
       if (!statusBar) return;
       statusBar.textContent = text;
@@ -935,6 +978,156 @@
       }
       return res.json();
     }
+
+    /* ---------- Mic / STT handling ---------- */
+
+    function formatTimer(ms) {
+      const s = Math.floor(ms / 1000);
+      const mm = String(Math.floor(s / 60)).padStart(2, "0");
+      const ss = String(s % 60).padStart(2, "0");
+      return `${mm}:${ss}`;
+    }
+
+    function startRecordingTimer() {
+      recordingStart = Date.now();
+      micTimerEl.textContent = "00:00";
+      recordingInterval = setInterval(() => {
+        const elapsed = Date.now() - recordingStart;
+        micTimerEl.textContent = formatTimer(elapsed);
+      }, 250);
+    }
+
+    function stopRecordingTimer() {
+      if (recordingInterval) {
+        clearInterval(recordingInterval);
+        recordingInterval = null;
+      }
+      micTimerEl.textContent = "";
+    }
+
+    async function startRecording() {
+      // Request microphone permission and start MediaRecorder
+      setStatus("Waiting for microphone...");
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Prefer webm/opus if supported, otherwise default mime
+        const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : (MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/wav");
+
+        recordedChunks = [];
+        mediaRecorder = new MediaRecorder(stream, { mimeType });
+
+        mediaRecorder.ondataavailable = (ev) => {
+          if (ev.data && ev.data.size > 0) recordedChunks.push(ev.data);
+        };
+
+        mediaRecorder.onstop = async () => {
+          setStatus("Recording stopped. Uploading...");
+          stopRecordingTimer();
+          micBtn.classList.remove("recording");
+          // stop all tracks
+          stream.getTracks().forEach((t) => t.stop());
+          const blob = new Blob(recordedChunks, { type: mimeType });
+          await uploadRecordingBlob(blob);
+        };
+
+        mediaRecorder.onerror = (ev) => {
+          console.error("MediaRecorder error", ev);
+          setStatus("Recording error.", true);
+          stopRecordingTimer();
+          micBtn.classList.remove("recording");
+        };
+
+        mediaRecorder.start();
+        micBtn.classList.add("recording");
+        startRecordingTimer();
+        setStatus("Recording...");
+      } catch (err) {
+        console.error("startRecording error", err);
+        setStatus("Microphone unavailable. Use file upload.", true);
+        // fallback: open file chooser
+        promptFileUploadForSTT();
+      }
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+      }
+    }
+
+    // Toggle record / stop
+    micBtn.addEventListener("click", async () => {
+      if (mediaRecorder && mediaRecorder.state === "recording") {
+        stopRecording();
+        return;
+      }
+      // start
+      await startRecording();
+    });
+
+    // Fallback file picker if mic not available
+    function promptFileUploadForSTT() {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "audio/*";
+      input.onchange = async (e) => {
+        const f = e.target.files[0];
+        if (!f) return;
+        setStatus("Uploading audio file...");
+        try {
+          await uploadRecordingBlob(f);
+        } catch (err) {
+          console.error("uploadRecordingBlob error", err);
+          setStatus("Upload failed.", true);
+        }
+      };
+      input.click();
+    }
+
+    async function uploadRecordingBlob(blobOrFile) {
+      // Send multipart/form-data to STT endpoint and insert transcript into composer (non-auto-send)
+      try {
+        const fd = new FormData();
+        fd.append("file", blobOrFile, "recording.webm");
+        fd.append("language", "en");
+        // optional prompt biasing
+        fd.append("prompt", "Sreyash,MyCorp");
+
+        // Use /transcribe (matches current server OpenAPI). If you change to /api/stt/transcribe,
+        // update this path or set API_BASE accordingly.
+        const url = API_BASE + "/transcribe";
+
+        // disable UI while uploading
+        micBtn.disabled = true;
+        btnSend.disabled = true;
+        setStatus("Transcribing...");
+
+        const res = await fetch(url, { method: "POST", body: fd });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(`STT failed: ${res.status} ${txt}`);
+        }
+        const j = await res.json();
+        const text = j.text || "";
+        const lang = j.language || "";
+
+        // Insert transcript into composer WITHOUT sending automatically
+        const prefix = domComposer.value ? domComposer.value + " " : "";
+        domComposer.value = prefix + text;
+        domComposer.focus();
+        setStatus(`Transcribed (${lang}). Edit before sending.`);
+      } catch (err) {
+        console.error("uploadRecordingBlob", err);
+        setStatus("STT upload/transcribe failed.", true);
+      } finally {
+        micBtn.disabled = false;
+        btnSend.disabled = false;
+      }
+    }
+
+    /* ---------- rest of UI code (unchanged) ---------- */
 
     function renderProfiles(profiles) {
       domProfilesList.innerHTML = "";

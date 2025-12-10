@@ -37,7 +37,9 @@ from backend.modules.chat.chat_ui import router as chat_router
 from backend.modules.tools.tools_runtime import execute_tool
 from backend.modules.telemetry.risk import assess_risk
 from backend.modules.security.security_sessions import create_security_session
-from backend.modules.stt.stt_router import stt_router # 🟢 NEW
+from backend.modules.stt.stt_router import router as stt_router # 🟢 NEW
+from backend.modules.router.api_router import router as intent_router
+from backend.modules.automation.router import router as automation_router
 
 # =========================
 # FastAPI app
@@ -50,8 +52,8 @@ app.include_router(chat_router)
 app.include_router(stt_router)
 # Mount security dashboard API router
 app.include_router(security_router)
-
-
+app.include_router(intent_router)
+app.include_router(automation_router)
 # =========================
 # API models
 # =========================

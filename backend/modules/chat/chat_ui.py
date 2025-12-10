@@ -32,6 +32,9 @@ from backend.core.config import (
 )
 from backend.modules.telemetry.history import history_logger
 from backend.modules.code.pipeline import call_ollama
+# add with other backend.modules imports
+from backend.modules.router.router import route_request
+
 from backend.modules.code.prompts import CHAT_SYSTEM_PROMPT
 from backend.modules.kb.profile_kb import (
     build_profile_context,
@@ -383,77 +386,182 @@ what the result means, and any next steps. Do NOT show raw JSON unless needed.
 # =========================
 
 
-@router.post("/api/chat/vision")
-async def api_chat_vision(
-    profile_id: Optional[str] = Form(None),
-    chat_id: Optional[str] = Form(None),
-    prompt: str = Form(""),
-    mode: str = Form("auto"),
-    image: UploadFile = File(...),
-):
+@router.post("/api/chat", response_model=ChatResponse)
+def api_chat(req: ChatRequest):
     """
-    Vision endpoint used by chat.html.
-
-    - Accepts an image + optional text prompt.
-    - Runs through vision_pipeline.run_vision.
-    - Appends both user + assistant messages to the chat history.
+    Main /api/chat endpoint (router-first).
+    This function preserves all previous behavior but asks the router first
+    so commands, tools, code, automation can be intercepted safely.
     """
-    if not VISION_ENABLED:
-        raise HTTPException(status_code=400, detail="Vision is disabled in config.")
-
-    profile = _ensure_profile(profile_id)
+    profile = _ensure_profile(req.profile_id)
     profile_id = profile["id"]
-    chat_meta = _ensure_chat(profile_id, chat_id)
+
+    chat_meta = _ensure_chat(profile_id, req.chat_id)
     chat_id = chat_meta["id"]
 
-    raw_prompt = prompt or ""
+    raw_prompt = req.prompt or ""
     safe_prompt = sanitize_chat_input(raw_prompt)
 
-    img_bytes = await image.read()
-    img_b64 = base64.b64encode(img_bytes).decode("ascii")
-
-    payload_text = safe_prompt
-    if payload_text:
-        payload_text += "\n\n"
-    payload_text += "[Attached image: %s bytes, content-type=%s]" % (
-        len(img_bytes),
-        image.content_type,
-    )
-
-    vision_output = run_vision(
-        mode=mode,
-        prompt=safe_prompt,
-        image_b64=img_b64,
+    # 1) existing ///tool handling (keep this as-is)
+    tool_response = _maybe_handle_tool_command(
+        prompt_text=safe_prompt,
+        req=req,
         profile=profile,
         profile_id=profile_id,
         chat_meta=chat_meta,
         chat_id=chat_id,
     )
+    if tool_response is not None:
+        return ChatResponse(
+            output=tool_response["output"],
+            profile_id=tool_response["profile_id"],
+            chat_id=tool_response["chat_id"],
+        )
 
-    append_message(profile_id, chat_id, "user", payload_text)
-    vision_output = clamp_chat_output(vision_output)
-    append_message(profile_id, chat_id, "assistant", vision_output)
+    # 2) Router-first: classify and (optionally) route before invoking chat pipeline
+    routed = None
+    try:
+        # route_request should not execute risky ops by default from UI; execute=False
+        routed = route_request({
+            "text": safe_prompt,
+            "profile_id": profile_id,
+            "chat_id": chat_id,
+            "source": "chat",
+            "execute": False,
+        })
+    except Exception as e:
+        # If router fails for any reason, fallback to chat pipeline so UI doesn't break.
+        # We log the exception into history for debugging.
+        try:
+            history_logger.log(
+                {
+                    "mode": "router_error",
+                    "original_prompt": raw_prompt,
+                    "normalized_prompt": safe_prompt,
+                    "final_output": str(e),
+                    "chat_profile_id": profile_id,
+                    "chat_id": chat_id,
+                }
+            )
+        except Exception:
+            pass
+        routed = {"intent": "chat", "confidence": 0.0, "action": "chat", "result": None}
+
+    # 3) If router decided not to route to chat, return router result to UI
+    if routed.get("action") and routed.get("action") != "chat":
+        rr = routed.get("result", {})
+        # extract a friendly textual output
+        if isinstance(rr, dict) and "output" in rr:
+            out_text = rr.get("output")
+        elif isinstance(rr, dict) and "message" in rr:
+            out_text = rr.get("message")
+        elif isinstance(rr, dict) and "final_output" in rr:
+            out_text = rr.get("final_output")
+        else:
+            try:
+                out_text = json.dumps(rr, ensure_ascii=False)
+            except Exception:
+                out_text = str(rr)
+
+        # Append messages only if router indicates it executed something that should be in history
+        try:
+            append_message(profile_id, chat_id, "user", safe_prompt)
+            append_message(profile_id, chat_id, "assistant", out_text)
+        except Exception:
+            # don't break the response on append failure
+            pass
+
+        return ChatResponse(
+            output=out_text or "[routed action executed]",
+            profile_id=profile_id,
+            chat_id=chat_id,
+        )
+
+    # 4) Otherwise, fall back to chat flow (router may have already prepared result)
+    messages = get_messages(profile_id, chat_id)
+    context_block = build_profile_context(profile_id, safe_prompt, max_snippets=8)
+
+    base_model_name = _resolve_model(profile, chat_meta)
+    profile_name = profile.get("display_name") or profile_id
+
+    if req.smart:
+        smart_result = run_chat_smart(
+            profile=profile,
+            profile_id=profile_id,
+            chat_meta=chat_meta,
+            chat_id=chat_id,
+            messages=messages,
+            user_prompt=safe_prompt,
+            context_block=context_block,
+        )
+        answer = smart_result.get("answer") or ""
+        judge_payload = smart_result.get("judge")
+        model_name_used = smart_result.get("model_used") or base_model_name
+        smart_plan = smart_result.get("plan")
+        mode_label = "chat_smart"
+    else:
+        convo_lines: List[str] = []
+        for msg in messages:
+            convo_lines.append(_render_message_for_prompt(msg))
+        convo_lines.append("USER: %s" % safe_prompt)
+        convo_block = "\n".join(convo_lines)
+
+        if context_block:
+            context_section = "Profile knowledge (saved notes):\n%s\n\n" % context_block
+        else:
+            context_section = ""
+
+        full_prompt = """
+%s
+
+Current profile: %s
+
+%sConversation so far:
+%s
+
+ASSISTANT:
+""".strip() % (
+            CHAT_SYSTEM_PROMPT,
+            profile_name,
+            context_section,
+            convo_block,
+        )
+
+        model_name_used = base_model_name
+        answer = call_ollama(full_prompt, model_name_used)
+        judge_payload = None
+        smart_plan = None
+        mode_label = "chat"
+
+    answer = clamp_chat_output(answer or "")
+
+    append_message(profile_id, chat_id, "user", safe_prompt)
+    append_message(profile_id, chat_id, "assistant", answer)
 
     history_logger.log(
         {
-            "mode": "chat_vision_%s" % (mode or "auto"),
+            "mode": mode_label,
             "original_prompt": raw_prompt,
             "normalized_prompt": safe_prompt,
             "coder_output": None,
             "reviewer_output": None,
-            "final_output": vision_output,
+            "final_output": answer,
             "escalated": False,
             "escalation_reason": "",
-            "judge": None,
+            "judge": judge_payload,
             "chat_profile_id": profile_id,
             "chat_profile_name": profile.get("display_name"),
             "chat_id": chat_id,
-            "chat_model_used": "vision",
+            "chat_model_used": model_name_used,
+            "chat_smart_plan": smart_plan,
             "models": {
-                "vision": VISION_MODEL_NAME,
+                "chat": model_name_used,
             },
         }
     )
+
+    return ChatResponse(output=answer, profile_id=profile_id, chat_id=chat_id)
+
 
     return {
         "profile_id": profile_id,
