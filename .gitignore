@@ -7,12 +7,25 @@ data/
 history/
 *.sqlite3
 *.jsonl
+*.db
 
 # Generated automatically
 logs/
 outputs/
 cache/
 tmp/
+**/tmp/
+**/cache/
+**/__cache__/
+
+# Memory / telemetry
+telemetry_logs/
+memory/
+sessions/
+handover/
+reports/
+legacy/
+scratch/
 
 # ====================================
 # 📄 INTERNAL DOCUMENTATION
@@ -21,13 +34,6 @@ tmp/
 # Hide everything in docs EXCEPT public readme
 docs/**
 !docs/public_readme.md
-
-# Handover / session / reports
-handover/
-sessions/
-reports/
-legacy/
-scratch/
 
 # ====================================
 # 🧠 Python + Environment garbage
@@ -40,11 +46,67 @@ __pycache__/
 .env
 .venv
 venv/
+.env.*
 .DS_Store
+Thumbs.db
 
 # Jupyter / temporary files
 .ipynb_checkpoints/
+*.ipynb
 *.tmp
 *.log
 *.backup.md
 *.draft.md
+
+# ====================================
+# 🧩 Backend runtime junk
+# ====================================
+
+# HF hub cache (VERY IMPORTANT)
+# avoids uploading 10GB of model shards
+~/.cache/*
+*cache/huggingface/*
+hf_cache*/
+
+# Faster-whisper downloads
+*.bin
+*.pt
+*.onnx
+models/
+whisper-cache/
+whisper_models/
+
+# FFmpeg / audio temp files
+*.wav.tmp
+*.webm.tmp
+*.mp3.tmp
+
+# Uvicorn reload leftover files
+*.reload
+*.hotreload
+*.pid
+
+# ====================================
+# ⚙️ Build / Deployment / Editors
+# ====================================
+
+# Node (if future UIs use npm/vite)
+node_modules/
+dist/
+build/
+.bundle/
+.env.local
+
+# VSCode / PyCharm
+.vscode/
+.idea/
+*.code-workspace
+
+# ====================================
+# 🔥 Conda + virtual environments
+# ====================================
+ai-gpu/
+env/
+conda_env/
+*.conda
+*.yaml.lock
