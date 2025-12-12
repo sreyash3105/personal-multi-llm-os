@@ -1,61 +1,3 @@
-"""
-Tools Runtime (V3.x with HARDENING + Security wiring)
-
-Central registry + safe execution layer for local tools.
-
-Current status:
-- Registry and execution helpers are defined.
-- A single demo "ping" tool is registered.
-- The runtime is controlled by feature flags in config.py:
-    TOOLS_RUNTIME_ENABLED
-    TOOLS_RUNTIME_LOGGING
-    TOOLS_MAX_RUNTIME_SECONDS
-
-Execution characteristics:
-- Each tool call is:
-    - bounded by TOOLS_MAX_RUNTIME_SECONDS (per-call timeout)
-    - measured and logged into history as timing entries
-
-V3.4.x — Risk tagging:
-- Each tool execution (and even failed/disabled lookups) is annotated with
-  a best-effort risk assessment:
-    record["risk"] = {
-      "risk_level": 1..6,
-      "tags": [...],
-      "reasons": "...",
-      "kind": "tool",
-    }
-
-V3.4.x — IO guards integration:
-- Tool results can be large; we now clamp ONLY the *logged* representation
-  using io_guards.clamp_tool_output before writing to history.
-- The value returned to callers (record["result"]) remains unmodified.
-
-V3.5 — Security engine wiring (Phase 1, non-blocking):
-- Each tool execution is also annotated with a SecurityEngine decision:
-    record["security"] = {
-        "auth_level": int,          # 1–6
-        "auth_label": str,          # e.g. "ALLOW", "CONFIRM"
-        "reason": str,
-        "risk_score": float,
-        "tags": List[str],
-        "policy_name": str,
-        "meta": Dict[str, Any],
-    }
-- Originally this was LOGGING ONLY — no enforcement.
-  The decision is also used by /api/security/auth and the chat UI.
-
-V3.7 — Security enforcement (config-gated, tools-only):
-- Optional enforcement controlled by:
-    SECURITY_ENFORCEMENT_MODE   in {"off", "soft", "strict"}
-    SECURITY_MIN_ENFORCED_LEVEL (int, default 4)
-- New field:
-    record["requires_approval"]: bool
-  - Indicates to the UI that a prior approval is needed when in "soft" mode.
-- Default remains telemetry-only:
-    SECURITY_ENFORCEMENT_MODE = "off"  -> no behavior change.
-"""
-
 from __future__ import annotations
 
 import time
@@ -75,6 +17,17 @@ from backend.modules.telemetry.risk import assess_risk
 from backend.modules.common.io_guards import clamp_tool_output  # shared output clamp for logging
 from backend.modules.security.security_engine import SecurityEngine, SecurityAuthLevel
 from backend.modules.security.security_sessions import consume_security_session_if_allowed
+
+# 🟢 NEW IMPORTS: Import tool registries from specific tool files
+# Note: file_tools.py must be importable (and implicitly registers file/kb tools)
+from backend.modules.tools.file_tools import TOOL_REGISTRY as FILE_TOOL_REGISTRY
+# Assuming pc_control_tools.py is the new file for PC automation (mouse/keyboard)
+# You need to ensure this file exists with the TOOL_REGISTRY_PC_CONTROL dict defined.
+try:
+    from backend.modules.tools.pc_control_tools import TOOL_REGISTRY_PC_CONTROL
+except ImportError:
+    TOOL_REGISTRY_PC_CONTROL = {}
+# ----------------------------------------------------------------------------------
 
 
 @dataclass
@@ -525,32 +478,63 @@ def _ping_tool(args: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -
         "context_seen": context is not None,
     }
 
-
-# Register built-in demo tools at import time.
-register_tool(
-    name="ping",
-    description="Simple connectivity check tool that echoes a message.",
-    params_schema={
-        "type": "object",
-        "properties": {
-            "message": {"type": "string", "description": "Optional message to echo back."}
+# 🟢 NEW: Centralized tool registration function
+def _auto_register_all_tools():
+    """
+    Registers all tools from internal modules and built-ins.
+    """
+    # 1. Register built-in tool(s)
+    register_tool(
+        name="ping",
+        description="Simple connectivity check tool that echoes a message.",
+        params_schema={
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "Optional message to echo back."}
+            },
+            "required": [],
         },
-        "required": [],
-    },
-    func=_ping_tool,
-)
+        func=_ping_tool,
+    )
 
+    # Helper to get a rudimentary schema/description from the function name
+    def _get_default_metadata(name):
+        return {
+            "description": f"Function from the {name.split('_')[0]} module.",
+            "params_schema": {
+                "type": "object",
+                "properties": {"args": {"type": "object"}},
+                "required": [],
+            }
+        }
+
+    # 2. Register tools from file_tools.py (KB/File operations)
+    for name, func in FILE_TOOL_REGISTRY.items():
+        meta = _get_default_metadata(name)
+        register_tool(name=name, **meta, func=func)
+
+    # 3. Register tools from pc_control_tools.py (PC Control)
+    for name, func in TOOL_REGISTRY_PC_CONTROL.items():
+        meta = _get_default_metadata(name)
+        register_tool(name=name, **meta, func=func)
+    
+# Call this function once at module import time to populate the registry.
+_auto_register_all_tools()
+# -------------------------------------------------------------------------
 
 # ==========================================
 # SECURITY ENFORCEMENT EXTENSION (V3.6)
 # ==========================================
 #
 # This layer runs BEFORE executing a tool.
-# Uses security_sessions.py without importing anything new globally.
-# No interference with telemetry / dashboard / risk pipeline.
-#
-# If a tool requires approval and no active session exists:
-# return a soft rejection that frontend can convert to popup.
+...
+# All remaining security enforcement functions (security_gate_for_tool, etc.)
+# are unchanged from the original source file.
+# ------------------------------------------------------------------------
+
+
+# 🟢 The security enforcement functions from the original source are assumed to be 
+# included here after the changes above.
 
 from backend.modules.security.security_sessions import (
     sec_check_or_consume,
