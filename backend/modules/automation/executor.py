@@ -44,6 +44,12 @@ except Exception:
     except Exception:
         execute_tool = None
 
+# Screen locator for UI actions (Plan Section 11)
+try:
+    from backend.modules.vision.screen_locator import locate_action_plan
+except Exception:
+    locate_action_plan = None
+
 # history logger for telemetry/audit
 try:
     from backend.modules.telemetry.history import history_logger
@@ -246,7 +252,22 @@ def plan_and_execute(user_text: str, context: Optional[Dict[str, Any]] = None, e
     """
     context = context or {}
     plan_obj = plan(user_text, context=context)
-    steps = plan_obj.get("steps") or []
+    
+    # 🟢 NEW: Check if the command requires screen vision/location context.
+    screen_plan = None
+    if locate_action_plan is not None:
+        # Simple heuristic: if planner thinks it's a click/keyboard/automation task
+        # we run the locator to get coordinates/action plan first.
+        if "click" in user_text.lower() or "type" in user_text.lower() or "automation" in user_text.lower():
+            screen_plan = locate_action_plan(user_text, context.get("profile_id"))
+            # Pass the screen plan result to the LLM planner for context
+            if screen_plan and screen_plan.get("ok"):
+                plan_obj["vision_context"] = screen_plan
+                user_text = f"Context: Screen Locator returned a plan: {screen_plan}. User instruction: {user_text}"
+                # Re-run the LLM planner with the added context for better final steps
+                plan_obj = plan(user_text, context=context)
+
+    steps = plan_obj.get("steps") or [] # Re-fetch steps after potential re-plan
 
     # Basic validation
     if not steps:
