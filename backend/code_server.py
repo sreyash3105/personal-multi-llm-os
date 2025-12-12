@@ -40,7 +40,7 @@ from backend.modules.security.security_sessions import create_security_session
 from backend.modules.stt.stt_router import router as stt_router # 🟢 NEW
 from backend.modules.router.api_router import router as intent_router
 from backend.modules.automation.router import router as automation_router
-
+from backend.modules.tts.tts_router import router as tts_router
 # =========================
 # FastAPI app
 # =========================
@@ -50,6 +50,7 @@ app = FastAPI(title="Local Code, Study & Chat Assistant")
 # Mount chat router (provides /api/chat*, including vision-in-chat)
 app.include_router(chat_router)
 app.include_router(stt_router)
+app.include_router(tts_router)
 # Mount security dashboard API router
 app.include_router(security_router)
 app.include_router(intent_router)
