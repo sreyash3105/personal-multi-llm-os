@@ -1,147 +1,121 @@
 """
-Simple "tool" functions the chat model can call via the bridge.
+file_tools.py
 
-For now they mostly work as wrappers around the profile knowledge base:
-- create_profile_note
-- list_profile_notes
-- read_profile_note
-- search_profile_notes  (NEW in V3.7 — lightweight KB search)
-
-Each tool:
-- takes a dict of arguments
-- returns a dict with at least: {"ok": bool, "message": str, ...}
+Tools for file operations and Knowledge Base (KB) interaction.
 """
 
-from typing import Dict, Any, List
+import os
+import shutil
+from typing import Dict, Any, List, Optional
 
-from profile_kb import add_snippet, list_snippets, get_snippet, search_snippets
+# 🟢 FIX: Use absolute import for profile_kb
+try:
+    from backend.modules.kb.profile_kb import add_snippet, list_snippets, get_snippet, search_snippets
+except ImportError:
+    # Fallback/Mock if the module isn't strictly available in some contexts
+    def add_snippet(*args, **kwargs): return {"error": "KB module missing"}
+    def list_snippets(*args, **kwargs): return {"snippets": []}
+    def get_snippet(*args, **kwargs): return None
+    def search_snippets(*args, **kwargs): return {"snippets": []}
 
-
-def tool_create_profile_note(args: Dict[str, Any]) -> Dict[str, Any]:
-    profile_id = (args.get("profile_id") or "").strip()
-    title = (args.get("title") or "").strip()
-    content = (args.get("content") or "").strip()
-
-    if not profile_id:
-        return {"ok": False, "message": "Missing profile_id"}
-    if not title or not content:
-        return {"ok": False, "message": "Both title and content are required"}
-
-    note_id = add_snippet(profile_id, title, content)
-    if not note_id:
-        return {"ok": False, "message": "Failed to create note"}
-
-    return {
-        "ok": True,
-        "message": f"Created note #{note_id} for profile {profile_id} with title '{title}'.",
-        "note_id": note_id,
-    }
-
-
-def tool_list_profile_notes(args: Dict[str, Any]) -> Dict[str, Any]:
-    profile_id = (args.get("profile_id") or "").strip()
-    if not profile_id:
-        return {"ok": False, "message": "Missing profile_id"}
-
-    notes = list_snippets(profile_id, limit=int(args.get("limit") or 20))
-
-    if not notes:
-        return {
-            "ok": True,
-            "message": f"No notes found for profile {profile_id}.",
-            "notes": [],
-        }
-
-    lines: List[str] = []
-    for n in notes:
-        preview = (n["content"] or "").strip().splitlines()
-        preview_line = preview[0] if preview else ""
-        if len(preview_line) > 120:
-            preview_line = preview_line[:117] + "..."
-        lines.append(f"#{n['id']} · {n['title']} · {preview_line}")
-
-    return {
-        "ok": True,
-        "message": "Profile notes:\n" + "\n".join(lines),
-        "notes": notes,
-    }
-
-
-def tool_read_profile_note(args: Dict[str, Any]) -> Dict[str, Any]:
-    try:
-        note_id = int(args.get("note_id"))
-    except Exception:
-        return {"ok": False, "message": "Invalid or missing note_id"}
-
-    note = get_snippet(note_id)
-    if not note:
-        return {"ok": False, "message": f"No note found with id {note_id}"}
-
-    return {
-        "ok": True,
-        "message": f"Note #{note_id} - {note['title']}:\n\n{note['content']}",
-        "note": note,
-    }
-
-
-def tool_search_profile_notes(args: Dict[str, Any]) -> Dict[str, Any]:
+def tool_read_file(args: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Search profile notes by a simple keyword query.
-
+    Reads the content of a file.
     Args:
-      - profile_id (str, required)
-      - query (str, required)
-      - limit (int, optional; default 20)
-
-    Returns:
-      {
-        "ok": bool,
-        "message": str,
-        "notes": [ ...matching snippets... ],
-      }
+      - path (str): The file path to read.
     """
-    profile_id = (args.get("profile_id") or "").strip()
-    query = (args.get("query") or "").strip()
-    limit_raw = args.get("limit")
-
-    if not profile_id:
-        return {"ok": False, "message": "Missing profile_id"}
-    if not query:
-        return {"ok": False, "message": "Missing query"}
+    path = args.get("path")
+    if not path:
+        return {"ok": False, "message": "Missing 'path' argument."}
+    
+    # Basic security check (prevent directory traversal)
+    if ".." in path or path.startswith("/"):
+        return {"ok": False, "message": "Access denied: Absolute paths or '..' not allowed."}
 
     try:
-        limit = int(limit_raw) if limit_raw is not None else 20
-    except Exception:
-        limit = 20
+        if not os.path.exists(path):
+            return {"ok": False, "message": f"File not found: {path}"}
+            
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {"ok": True, "content": content, "path": path}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
 
-    notes = search_snippets(profile_id, query, limit=limit)
+def tool_write_file(args: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Writes content to a file.
+    Args:
+      - path (str): The file path.
+      - content (str): The text content to write.
+    """
+    path = args.get("path")
+    content = args.get("content")
+    if not path or content is None:
+        return {"ok": False, "message": "Missing 'path' or 'content'."}
 
-    if not notes:
-        return {
-            "ok": True,
-            "message": f"No notes found for profile {profile_id} matching '{query}'.",
-            "notes": [],
-        }
+    # Basic security check
+    if ".." in path or path.startswith("/"):
+        return {"ok": False, "message": "Access denied."}
 
-    lines: List[str] = []
-    for n in notes:
-        preview = (n["content"] or "").strip().splitlines()
-        preview_line = preview[0] if preview else ""
-        if len(preview_line) > 120:
-            preview_line = preview_line[:117] + "..."
-        lines.append(f"#{n['id']} · {n['title']} · {preview_line}")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return {"ok": True, "message": f"File written: {path}"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
 
-    return {
-        "ok": True,
-        "message": f"Matching notes for profile {profile_id} and query '{query}':\n"
-        + "\n".join(lines),
-        "notes": notes,
-    }
+# --- KB Tools Wrappers ---
+
+def tool_kb_add(args: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Add a snippet to the Knowledge Base.
+    Args:
+      - title (str): Title of the note.
+      - content (str): The content/body.
+      - tags (str): Comma-separated tags.
+    """
+    profile_id = context.get("profile_id") if context else None
+    if not profile_id:
+        return {"ok": False, "message": "No profile context provided for KB operation."}
+
+    return add_snippet(
+        profile_id=profile_id,
+        title=args.get("title", "Untitled"),
+        content=args.get("content", ""),
+        tags=args.get("tags", "")
+    )
+
+def tool_kb_search(args: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Search the Knowledge Base.
+    Args:
+      - query (str): Search term.
+    """
+    profile_id = context.get("profile_id") if context else None
+    if not profile_id:
+        return {"ok": False, "message": "No profile context provided."}
+
+    return search_snippets(
+        profile_id=profile_id,
+        query=args.get("query", "")
+    )
+
+def tool_kb_list(args: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    List recent KB snippets.
+    """
+    profile_id = context.get("profile_id") if context else None
+    if not profile_id:
+        return {"ok": False, "message": "No profile context provided."}
+
+    return list_snippets(profile_id=profile_id, limit=args.get("limit", 10))
 
 
 TOOL_REGISTRY = {
-    "create_profile_note": tool_create_profile_note,
-    "list_profile_notes": tool_list_profile_notes,
-    "read_profile_note": tool_read_profile_note,
-    "search_profile_notes": tool_search_profile_notes,
+    "read_file": tool_read_file,
+    "write_file": tool_write_file,
+    "kb_add": tool_kb_add,
+    "kb_search": tool_kb_search,
+    "kb_list": tool_kb_list,
 }

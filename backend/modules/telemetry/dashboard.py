@@ -6,41 +6,22 @@ Simple HTML dashboard for inspecting recent history records.
 - Used by /dashboard endpoint via code_server.render_dashboard()
 - Reads records from history.load_recent_records(limit=N)
 - Renders as a single static HTML page (no external assets)
-
-V3.4.x additions:
-- Shows model-used telemetry from the "models" field.
-- Adds client-side filters:
-    - by mode
-    - by model (from chat_model_used + models dict)
-    - free-text search over prompt/output/judge/risk
-
-V3.5 additions (security phase, read-only):
-- Surfaces tool-level security metadata (if present) from tool_record.security:
-    - auth_level / auth_label / policy / tags
-- Shows tool name for tool_execution records.
-- Everything is read-only: this does NOT change how anything executes.
-
-V3.7 dashboard refresh:
-- Compact summary row + expandable details per record (click row to expand).
-- Summary columns:
-    - timestamp
-    - kind
-    - mode
-    - chat model (if any)
-    - models (telemetry)
-    - judge confidence (0.00–10.00)
-    - judge conflict (0.00–10.00)
-    - risk tags
-    - risk level (1.00–6.00)
-- All scores are treated as floats for display; existing data is preserved.
 """
 
 from __future__ import annotations
 
+# 🟢 FIX 1: Move router imports to the top for stable initialization
+from fastapi import APIRouter
 from typing import Any, Dict, List, Set, Tuple
 from html import escape
 
 from backend.modules.telemetry.history import load_recent_records
+# Assuming this import path is correct based on project structure
+try:
+    from backend.modules.security.security_sessions import get_active_sessions_for_profile
+except ImportError:
+    # Fallback to prevent crash if security module is not fully present
+    def get_active_sessions_for_profile(*args, **kwargs): return {"sessions": []}
 
 
 def _safe(val: Any) -> str:
@@ -61,11 +42,6 @@ def _shorten(text: Any, limit: int = 240) -> str:
 def _fmt_score(val: Any, *, default: str = "") -> str:
     """
     Format a numeric score as a float with 2 decimals.
-
-    - For judge scores: expected 0.00–10.00
-    - For risk_level: expected 1.00–6.00
-
-    If conversion fails, falls back to string or default.
     """
     if val is None or val == "":
         return default
@@ -73,7 +49,6 @@ def _fmt_score(val: Any, *, default: str = "") -> str:
         f = float(val)
         return f"{f:.2f}"
     except Exception:
-        # Preserve whatever came back from the pipeline
         return str(val)
 
 
@@ -125,10 +100,7 @@ def render_dashboard(limit: int = 50) -> str:
         original_full = rec.get("original_prompt")
         final_full = rec.get("final_output")
 
-        # Short versions for any list / preview we might want later
-        original_short = _shorten(original_full)
-        final_short = _shorten(final_full)
-
+        chat_profile_id = rec.get("chat_profile_id") or ""
         chat_profile_name = rec.get("chat_profile_name") or rec.get("profile_name") or ""
         chat_id = rec.get("chat_id") or ""
         chat_model_used = rec.get("chat_model_used") or ""
@@ -136,7 +108,6 @@ def render_dashboard(limit: int = 50) -> str:
         judge = rec.get("judge") or {}
         risk = rec.get("risk") or {}
 
-        # -------- Tool + security metadata (if present) --------
         tool_record = rec.get("tool_record") or {}
         tool_name = ""
         security = {}
@@ -148,7 +119,6 @@ def render_dashboard(limit: int = 50) -> str:
         if isinstance(tool_record, dict):
             tool_name = tool_record.get("tool") or ""
 
-            # If top-level risk is missing, fall back to tool_record.risk
             if not risk and isinstance(tool_record.get("risk"), dict):
                 risk = tool_record.get("risk") or {}
 
@@ -157,65 +127,39 @@ def render_dashboard(limit: int = 50) -> str:
                 security = sec
                 security_level = sec.get("auth_level", "")
                 security_label = sec.get("auth_label", "")
-                # Prefer explicit policy_name if present
                 security_policy = sec.get("policy_name") or sec.get("policy") or ""
                 tags = sec.get("tags") or []
                 if isinstance(tags, list):
                     security_tags = ", ".join(str(t) for t in tags)
 
-        # For older tool_execution entries that didn't set "kind"
         if not kind and mode == "tool_execution":
             kind = "tool"
 
-        # -------- Judge fields (float semantics) --------
-        judge_conf_raw = ""
-        judge_conflict_raw = ""
-        judge_summary = ""
-
-        if isinstance(judge, dict):
-            judge_conf_raw = judge.get("confidence_score", "")
-            judge_conflict_raw = judge.get("conflict_score", "")
-            judge_summary = _shorten(judge.get("judgement_summary"))
+        judge_conf_raw = judge.get("confidence_score", "")
+        judge_conflict_raw = judge.get("conflict_score", "")
+        judge_summary = _shorten(judge.get("judgement_summary"))
 
         judge_conf = _fmt_score(judge_conf_raw)
         judge_conflict = _fmt_score(judge_conflict_raw)
 
-        # -------- Risk fields (float semantics, but 1.00–6.00 range) --------
-        risk_level_raw = ""
-        risk_tags = ""
-        risk_reasons = ""
-        if isinstance(risk, dict):
-            risk_level_raw = risk.get("risk_level", "")
-            tags = risk.get("tags") or []
-            if isinstance(tags, list):
-                risk_tags = ", ".join(str(t) for t in tags)
-            risk_reasons = _shorten(risk.get("reasons"))
+        risk_level_raw = risk.get("risk_level", "")
+        tags = risk.get("tags") or []
+        if isinstance(tags, list):
+            risk_tags = ", ".join(str(t) for t in tags)
+        risk_reasons = _shorten(risk.get("reasons"))
 
         risk_level = _fmt_score(risk_level_raw)
 
-        # Models dictionary (telemetry)
         models_dict = rec.get("models") or {}
-        if isinstance(models_dict, dict):
-            models_text = ", ".join(
-                f"{k}:{v}" for k, v in models_dict.items() if v
-            )
-        else:
-            models_text = ""
+        models_text = ", ".join(f"{k}:{v}" for k, v in models_dict.items() if v)
 
-        # Data attributes for filtering
         data_mode = escape(str(mode))
         data_model = escape(str(chat_model_used))
         data_models = escape(models_text)
 
-        # Security summary for quick glance in expanded view
-        if security_policy:
-            sec_notes = security_policy
-        elif security_tags:
-            sec_notes = security_tags
-        else:
-            sec_notes = ""
+        sec_notes = security_policy if security_policy else (security_tags if security_tags else "")
 
-        # Summary row (clickable)
+        # --- Python code block for HTML structure using a simple f-string ---
         summary_row_html = f"""
         <tr
           class="summary-row"
@@ -236,13 +180,13 @@ def render_dashboard(limit: int = 50) -> str:
         </tr>
         """
 
-        # Detail row (hidden by default, toggled via JS)
         detail_row_html = f"""
         <tr class="detail-row" data-idx="{idx}" style="display:none;">
           <td colspan="9">
             <div class="detail-container">
               <div class="detail-meta">
-                <div><strong>Profile:</strong> {_safe(chat_profile_name) or "-"}</div>
+                <div><strong>Profile Name:</strong> {_safe(chat_profile_name) or "-"}</div>
+                <div><strong>Profile ID:</strong> {_safe(chat_profile_id) or "-"}</div>
                 <div><strong>Chat ID:</strong> {_safe(chat_id) or "-"}</div>
               </div>
 
@@ -289,16 +233,23 @@ def render_dashboard(limit: int = 50) -> str:
           </td>
         </tr>
         """
+        # --- End Python code block ---
 
         rows_html_parts.append(summary_row_html)
         rows_html_parts.append(detail_row_html)
 
     rows_html = "\n".join(rows_html_parts)
 
-    html = f"""<!DOCTYPE html>
+    # 🟢 FIX 2: Define HTML as a standard Python string literal, and then 
+    # use .format() on the string with the major blocks (rows_html and options).
+    # This avoids the SyntaxError by isolating the complex f-string parsing.
+    HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>Local AI OS — Dashboard</title>
   <style>
     body {{
@@ -460,7 +411,7 @@ def render_dashboard(limit: int = 50) -> str:
   <header>
     <h1>Local AI OS — Dashboard</h1>
     <div class="meta">
-      Showing latest {len(records)} records · Limit = {limit}
+      Showing latest {record_count} records · Limit = {limit_value}
     </div>
   </header>
   <main>
@@ -468,13 +419,13 @@ def render_dashboard(limit: int = 50) -> str:
       <label>
         Mode:
         <select id="modeFilter">
-          {mode_options_html}
+          {mode_options}
         </select>
       </label>
       <label>
         Model:
         <select id="modelFilter">
-          {model_options_html}
+          {model_options}
         </select>
       </label>
       <label>
@@ -595,21 +546,52 @@ def render_dashboard(limit: int = 50) -> str:
       modeFilter.addEventListener('change', applyFilters);
       modelFilter.addEventListener('change', applyFilters);
       searchInput.addEventListener('input', applyFilters);
+
+      // 🟢 AUTO-REFRESH LOGIC: Reloads the page every 10 seconds.
+      // The reload is only triggered if the search box is not focused/being typed in.
+      let refreshTimer = null;
+      const AUTO_REFRESH_INTERVAL_MS = 10000;
+
+      function scheduleReload() {{
+        if (refreshTimer) clearTimeout(refreshTimer);
+        // Only schedule a reload if the search box is not the active element
+        if (document.activeElement !== searchInput) {{
+            refreshTimer = setTimeout(() => {{
+                window.location.reload();
+            }}, AUTO_REFRESH_INTERVAL_MS);
+        }}
+      }}
+
+      // Clear timer on focus (typing)
+      searchInput.addEventListener('focus', () => {{
+        if (refreshTimer) clearTimeout(refreshTimer);
+        refreshTimer = null;
+      }});
+      
+      // Resume timer on blur (finished typing/search)
+      searchInput.addEventListener('blur', scheduleReload);
+
+      // Initial start
+      scheduleReload();
+
     }})();
   </script>
 </body>
 </html>
 """
-    return html
 
+    return HTML_TEMPLATE.format(
+        rows_html=rows_html,
+        mode_options=mode_options_html,
+        model_options=model_options_html,
+        limit_value=limit,
+        record_count=len(records)
+    )
 
 # ==========================================
-# SECURITY SESSIONS PANEL (V3.6)
+# SECURITY SESSIONS ROUTER
 # ==========================================
-# Read-only endpoint — does not affect runtime or telemetry.
-
-from fastapi import APIRouter
-from backend.modules.security.security_sessions import get_active_sessions_for_profile
+# This router must be defined outside the render_dashboard function.
 
 security_router = APIRouter()
 

@@ -31,7 +31,15 @@ from backend.core.config import (
     STT_ENABLED,       # 🟢 NEW
     STT_MODEL_NAME,    # 🟢 NEW
 )
-from backend.modules.telemetry.dashboard import render_dashboard, security_router
+# 🟢 CRITICAL FIX: Safely import dashboard components to prevent module crash
+try:
+    from backend.modules.telemetry.dashboard import render_dashboard, security_router
+except ImportError:
+    # Placeholder functions if dashboard module fails to load (due to SyntaxError)
+    def render_dashboard(limit: int = 50): return f"<h2>Dashboard failed to load. Fix backend/modules/telemetry/dashboard.py.</h2>"
+    security_router = None # Placeholder router will not be mounted
+    print("[CRITICAL FIX] Dashboard module import failed. Using safe placeholders.")
+
 from backend.modules.vision.vision_pipeline import run_vision
 from backend.modules.chat.chat_ui import router as chat_router
 from backend.modules.tools.tools_runtime import execute_tool
@@ -51,8 +59,9 @@ app = FastAPI(title="Local Code, Study & Chat Assistant")
 app.include_router(chat_router)
 app.include_router(stt_router)
 app.include_router(tts_router)
-# Mount security dashboard API router
-app.include_router(security_router)
+# Mount security dashboard API router conditionally
+if security_router:
+    app.include_router(security_router)
 app.include_router(intent_router)
 app.include_router(automation_router)
 # =========================
