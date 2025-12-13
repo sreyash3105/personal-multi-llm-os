@@ -90,10 +90,14 @@ whisper_models/
 # ⚙️ Build / Deployment / Editors
 # ====================================
 
-# Node (if future UIs use npm/vite)
-node_modules/
+# PyInstaller / Build Artifacts (🟢 NEW)
+*.spec
 dist/
 build/
+manifest/
+
+# Node (if future UIs use npm/vite)
+node_modules/
 .bundle/
 .env.local
 
