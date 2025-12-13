@@ -6,7 +6,7 @@ Features:
  - decode many container formats via av
  - resample to TARGET_SR (16000) mono using av.AudioResampler
  - normalize to float32 in [-1, 1]
- - call faster-whisper model.transcribe with numpy + sample_rate or fallback to temp WAV path
+ - call faster-whisper model.transcribe with numpy (assumes 16k) or fallback to temp WAV path
  - fp16 -> float32 model reload fallback
  - telemetry hooks (history_logger, assess_risk) attempted if available
 """
@@ -27,12 +27,12 @@ from backend.core import config  # your project config
 
 # Try to import telemetry hooks without failing if absent
 try:
-    from backend.core.telemetry import history_logger
+    from backend.modules.telemetry import history_logger
 except Exception:
     history_logger = None
 
 try:
-    from backend.core.security import assess_risk
+    from backend.modules.security import assess_risk
 except Exception:
     # fallback that returns "unknown" risk
     def assess_risk(*_args, **_kwargs):
@@ -123,14 +123,16 @@ class STTService:
 
     def _transcribe_with_array(self, pcm: "np.ndarray", sr: int, language: Optional[str], prompt: Optional[str]) -> dict:
         """
-        Try to call model.transcribe with numpy array + sample_rate. If that fails,
-        write a temporary WAV file and call model.transcribe(path).
+        Try to call model.transcribe with numpy array.
+        (Removed sample_rate arg as faster-whisper infers 16k for arrays).
+        If that fails, write a temporary WAV file and call model.transcribe(path).
         Returns: {"text": str, "language": str}
         """
         self._load_model()
         try:
-            # Preferred path: array + sample_rate
-            result = self.model.transcribe(pcm, sample_rate=sr, language=language or None, initial_prompt=prompt or None)
+            # Preferred path: array (faster-whisper assumes 16k)
+            # FIX: Removed 'sample_rate=sr' which caused TypeError
+            result = self.model.transcribe(pcm, language=language or None, initial_prompt=prompt or None)
 
             # result shapes vary by faster-whisper version:
             # - sometimes (segments, info)

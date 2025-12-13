@@ -43,15 +43,14 @@ AVAILABLE_MODELS = {
 
 # Fast coder (you can switch to "phi3" if you prefer max speed)
 ACTIVE_CODER_MODEL_KEY = "qwen25_coder_7b"
-# ACTIVE_CODER_MODEL_KEY = "phi3"
 
-# Reviewer: heavy, high-quality code reviewer (using deepseek-coder since codestral not available)
+# Reviewer: heavy, high-quality code reviewer
 ACTIVE_REVIEWER_MODEL_KEY = "deepseek_coder_67b"
 
-# Judge: light general reasoner to score confidence/conflict
-ACTIVE_JUDGE_MODEL_KEY = "qwen25_7b"
+# Judge: Uses DeepSeek R1 for superior reasoning and logic verification [UPDATED]
+ACTIVE_JUDGE_MODEL_KEY = "deepseek_r1_7b"
 
-# Study / teaching model: deeper reasoning, good explanations (using gemma2:9b since qwen2.5:14b not available)
+# Study / teaching model: deeper reasoning, good explanations
 ACTIVE_STUDY_MODEL_KEY = "gemma2_9b"
 
 
@@ -97,12 +96,11 @@ HISTORY_MAX_ENTRIES = 1000
 
 # ---- Chat model ----
 # Default chat model for the multi-profile chat workspace.
-# You can change this to any value from AVAILABLE_MODELS or a raw Ollama name.
 CHAT_MODEL_NAME = AVAILABLE_MODELS.get("llama31_8b", "llama3.1:8b")
 
 # Smarter / heavier chat model for the "Smart" button in the UI.
-# Using gemma2:9b as the smarter model
-SMART_CHAT_MODEL_NAME = AVAILABLE_MODELS.get("gemma2_9b", CHAT_MODEL_NAME)
+# [UPDATED] Using DeepSeek R1 for better planning and reasoning
+SMART_CHAT_MODEL_NAME = AVAILABLE_MODELS.get("deepseek_r1_7b", "deepseek-r1:7b")
 
 
 # ---- Vision settings ----
@@ -128,7 +126,6 @@ TOOLS_RUNTIME_ENABLED = True
 TOOLS_RUNTIME_LOGGING = True
 
 # Allow chat messages to directly trigger tools with the "///tool" command.
-# When False, chat behaves exactly as before and ignores tool tags.
 TOOLS_IN_CHAT_ENABLED = True
 
 # When enabled, the special "///tool+chat TOOL_NAME" command in chat will:
@@ -139,64 +136,30 @@ TOOLS_CHAT_HYBRID_ENABLED = True
 
 # ---- Security enforcement settings (V3.7) ----
 # Global mode for using SecurityEngine + sessions.
-#
 # "off"    -> current behavior (log-only, never block anything).
 # "soft"   -> high-risk operations can return "security_approval_required"
-#             instead of executing immediately. Caller/UX can then ask
-#             for approval and re-run with a valid security session.
 # "strict" -> reserved for future; can be used to hard-block without approval.
 SECURITY_ENFORCEMENT_MODE = "off"
 
 # Minimum auth level that triggers enforcement when mode != "off".
-# Auth levels from security_engine.SecurityAuthLevel:
-#   1 = ALLOW
-#   2 = LOG_ONLY
-#   3 = CONFIRM
-#   4 = CONFIRM_SENSITIVE
-#   5 = STRONG_VERIFY
-#   6 = BLOCK
-#
-# With SECURITY_MIN_ENFORCED_LEVEL = 4:
-#   - auth_level 1–3  -> always allowed
-#   - auth_level 4–6  -> subject to enforcement (soft/strict)
+# 4 = CONFIRM_SENSITIVE (allows minor/safe stuff, blocks risky/system stuff)
 SECURITY_MIN_ENFORCED_LEVEL = 4
 
 # Optional: extra tuning knobs for SecurityEngine.
-# These are read by security_engine.SecurityEngine if present, but the
-# engine already has safe defaults. Leaving them empty is fine.
-SECURITY_RISK_THRESHOLDS = {
-    # Example override (uses defaults when empty):
-    # "allow_max": 1.9,
-    # "log_only_max": 3.9,
-    # "confirm_max": 5.9,
-    # "confirm_sensitive_max": 7.9,
-    # "strong_verify_max": 8.9,
-}
-
-SECURITY_TOOL_OVERRIDES = {
-    # Example (future):
-    # "shell": {"min_level": 5, "tags": ["system", "shell"]},
-    # "delete_file": {"min_level": 4, "tags": ["filesystem", "destructive"]},
-}
-
-SECURITY_OPERATION_OVERRIDES = {
-    # Example (future):
-    # "file_write": {"min_level": 3, "tags": ["filesystem"]},
-    # "network_request": {"min_level": 2, "tags": ["network"]},
-}
+SECURITY_RISK_THRESHOLDS = {}
+SECURITY_TOOL_OVERRIDES = {}
+SECURITY_OPERATION_OVERRIDES = {}
 
 
 # ---- HARDNING BASE · Phase 2 — Concurrency & timeouts ----
 # These guardrails are used by pipeline.py, vision_pipeline.py, tools_runtime.py, etc.
 
 # Maximum number of heavy operations that can run at the same time.
-# "Heavy" includes: /api/code pipeline, /api/vision, and any other explicitly-marked heavy tasks.
 MAX_CONCURRENT_HEAVY_REQUESTS = 2
 
 # Timeout for individual Ollama model calls (in seconds).
-# Applied around coder/reviewer/judge/study/chat/vision model invocations.
+# DeepSeek R1 can be verbose, so 120s is a good safety margin.
 OLLAMA_REQUEST_TIMEOUT_SECONDS = 120
 
 # Maximum allowed runtime for a single tool execution (in seconds).
-# Tools that exceed this should return a controlled "tool_timeout" error instead of hanging.
 TOOLS_MAX_RUNTIME_SECONDS = 60

@@ -1,22 +1,22 @@
 """
-queue_manager.py
+queue_manager.py (V4.0 - Global Resource Aware)
 
-Lightweight per-profile job queue for the Personal Local AI OS.
+Centralized Job Queue & Resource Governor.
 
-Goal (V3.4.x):
-- Ensure only one "heavy" job per profile runs at a time.
-- Additional jobs for the same profile are queued FIFO.
-- Fully in-memory, no DB migrations.
-- Best-effort logging into history (queue_event records).
+UPGRADES:
+- Global "Heavy" Job Tracking: Prevents VRAM OOM by enforcing MAX_CONCURRENT_HEAVY_REQUESTS.
+- Resource Awareness: Jobs can be flagged as `is_heavy` (Code/Vision) or light.
+- State Integrity: Ensures active counts are decremented correctly on failure/cancel.
 
-This module is SAFE on its own:
-- Importing it does NOT change any behavior.
-- Nothing runs until other modules explicitly call its functions.
+Usage:
+    # Enqueue a heavy job (default)
+    job = enqueue_job(pid, "code", is_heavy=True)
 
-Planned integration points (later):
-- chat_pipeline.py (smart chat)
-- pipeline.py (coder / reviewer / judge / study)
-- optionally vision_pipeline.py
+    # Poll for permission to run
+    job = try_acquire_next_job(pid)
+    if job:
+        # RUN...
+        mark_job_done(job.id)
 """
 
 from __future__ import annotations
@@ -28,28 +28,19 @@ from dataclasses import dataclass, asdict, field
 from typing import Any, Deque, Dict, List, Optional
 
 from backend.modules.telemetry.history import history_logger
-
-
+from backend.core.config import MAX_CONCURRENT_HEAVY_REQUESTS
 
 @dataclass
 class Job:
     """
     Represents a single queued job.
-
-    Fields:
-      - id: unique integer within this process
-      - profile_id: profile key (e.g. "A", "B", UUID, etc.)
-      - kind: "code", "study", "chat_smart", "vision", etc.
-      - state: "queued" | "running" | "done" | "failed" | "cancelled"
-      - created_ts: UNIX timestamp when enqueued
-      - started_ts / finished_ts: optional timestamps
-      - meta: free-form dict for additional context (non-sensitive)
-      - error: optional error message for failed jobs
+    V4 Adds: `is_heavy` flag for VRAM management.
     """
     id: int
     profile_id: str
     kind: str
-    state: str
+    state: str  # "queued", "running", "done", "failed", "cancelled"
+    is_heavy: bool
     created_ts: float
     started_ts: Optional[float] = None
     finished_ts: Optional[float] = None
@@ -58,7 +49,7 @@ class Job:
 
 
 # =========================
-# Internal state
+# Internal State
 # =========================
 
 _LOCK = threading.Lock()
@@ -72,57 +63,38 @@ _JOBS: Dict[int, Job] = {}
 # Which job is currently running for each profile (if any)
 _ACTIVE_BY_PROFILE: Dict[str, int] = {}
 
+# Global Resource Counters
+_ACTIVE_HEAVY_COUNT = 0
+
 # Monotonic job ID generator
 _NEXT_JOB_ID = 1
 
 
 # =========================
-# Internal helpers
+# Internal Helpers
 # =========================
 
 def _next_id() -> int:
-    """
-    Generate a new unique job ID.
-    Only safe to call under _LOCK.
-    """
     global _NEXT_JOB_ID
     jid = _NEXT_JOB_ID
     _NEXT_JOB_ID += 1
     return jid
 
-
 def _log_queue_event(job: Job, event: str, note: Optional[str] = None) -> None:
-    """
-    Best-effort history log for queue events.
-
-    Record shape:
-
-      {
-        "kind": "queue_event",
-        "event": "queued" | "started" | "done" | "failed" | "cancelled",
-        "job_id": 12,
-        "profile_id": "A",
-        "job_kind": "code",
-        "meta": {...},
-        "note": "optional human-readable note",
-      }
-
-    Must never raise.
-    """
+    """Log queue transitions to history."""
     try:
-        history_logger.log(
-            {
-                "kind": "queue_event",
-                "event": event,
-                "job_id": job.id,
-                "profile_id": job.profile_id,
-                "job_kind": job.kind,
-                "meta": dict(job.meta) if isinstance(job.meta, dict) else {},
-                "note": note or "",
-            }
-        )
+        history_logger.log({
+            "kind": "queue_event",
+            "event": event,
+            "job_id": job.id,
+            "profile_id": job.profile_id,
+            "job_kind": job.kind,
+            "is_heavy": job.is_heavy,
+            "global_heavy_count": _ACTIVE_HEAVY_COUNT,
+            "meta": dict(job.meta),
+            "note": note or "",
+        })
     except Exception:
-        # Queue logging must never break callers.
         pass
 
 
@@ -134,31 +106,20 @@ def enqueue_job(
     profile_id: str,
     kind: str,
     meta: Optional[Dict[str, Any]] = None,
+    is_heavy: bool = True,  # Default to True for safety (Code/Vision are heavy)
 ) -> Job:
     """
-    Enqueue a new job for a given profile.
-
-    Returns the Job object in state="queued".
-
-    Typical usage pattern (future):
-
-        job = enqueue_job(profile_id, "chat_smart", {"chat_id": chat_id})
-        acquired = try_acquire_next_job(profile_id)
-        if acquired and acquired.id == job.id:
-            # run the job now...
-            ...
-            mark_job_done(job.id)
-
-    For now, this module is not wired; it is safe to just create jobs
-    and later inspect get_queue_snapshot() from dashboard.
+    Enqueue a new job.
+    
+    Args:
+        is_heavy (bool): If True, this job will wait for a global VRAM slot.
     """
     profile_id = (profile_id or "").strip()
     if not profile_id:
         raise ValueError("profile_id must be a non-empty string")
 
-    kind = (kind or "unknown").strip() or "unknown"
+    kind = (kind or "unknown").strip()
     meta = meta or {}
-
     now = time.time()
 
     with _LOCK:
@@ -168,6 +129,7 @@ def enqueue_job(
             profile_id=profile_id,
             kind=kind,
             state="queued",
+            is_heavy=is_heavy,
             created_ts=now,
             meta=dict(meta),
         )
@@ -186,44 +148,50 @@ def enqueue_job(
 
 def try_acquire_next_job(profile_id: str) -> Optional[Job]:
     """
-    Try to start the next job for a profile.
-
-    Behavior:
-      - If there is already an active job for this profile, returns None.
-      - Otherwise pops the next queued job (if any),
-        marks it as running, sets started_ts, and returns it.
-
-    This function does NOT execute the job; it only updates metadata.
-
-    Intended usage:
-
-        job = enqueue_job(profile_id, kind, meta)
-        acquired = try_acquire_next_job(profile_id)
-        if acquired and acquired.id == job.id:
-            # This process can run the job.
+    Attempts to start the next job for this profile.
+    
+    Checks TWO constraints:
+    1. Per-Profile: Is this profile already running a job? (FIFO)
+    2. Global VRAM: If job is heavy, are we below MAX_CONCURRENT_HEAVY_REQUESTS?
     """
+    global _ACTIVE_HEAVY_COUNT
     profile_id = (profile_id or "").strip()
     if not profile_id:
         return None
 
     with _LOCK:
-        # Already running something for this profile?
+        # Constraint 1: Profile Serialism
         active_id = _ACTIVE_BY_PROFILE.get(profile_id)
         if active_id is not None and active_id in _JOBS:
+            # This profile is already busy.
             return None
 
         q = _PROFILE_QUEUES.get(profile_id)
         if not q:
             return None
 
-        job_id = q.popleft()
-        job = _JOBS.get(job_id)
+        # Peek at the next job (don't pop yet)
+        next_job_id = q[0]
+        job = _JOBS.get(next_job_id)
         if not job:
+            q.popleft() # Clean up zombie
             return None
 
+        # Constraint 2: Global Heavy Limit
+        if job.is_heavy:
+            if _ACTIVE_HEAVY_COUNT >= MAX_CONCURRENT_HEAVY_REQUESTS:
+                # VRAM Full. Everyone waits.
+                return None
+
+        # All clear! Activate the job.
+        q.popleft() # Remove from queue
         job.state = "running"
         job.started_ts = time.time()
-        _ACTIVE_BY_PROFILE[profile_id] = job_id
+        
+        _ACTIVE_BY_PROFILE[profile_id] = job.id
+        
+        if job.is_heavy:
+            _ACTIVE_HEAVY_COUNT += 1
 
     _log_queue_event(job, "started")
     return job
@@ -231,26 +199,25 @@ def try_acquire_next_job(profile_id: str) -> Optional[Job]:
 
 def mark_job_done(job_id: int, note: Optional[str] = None) -> Optional[Job]:
     """
-    Mark a job as successfully completed.
-
-    This will:
-      - set state="done"
-      - set finished_ts
-      - clear active slot for that profile (allowing next job to start)
-
-    Returns the updated Job object (or None if job_id not found).
+    Mark job as done and release resources (Profile slot & VRAM slot).
     """
+    global _ACTIVE_HEAVY_COUNT
     with _LOCK:
         job = _JOBS.get(job_id)
         if not job:
             return None
 
+        # Only release resources if it was actually running
+        if job.state == "running":
+            active_id = _ACTIVE_BY_PROFILE.get(job.profile_id)
+            if active_id == job_id:
+                _ACTIVE_BY_PROFILE.pop(job.profile_id, None)
+            
+            if job.is_heavy:
+                _ACTIVE_HEAVY_COUNT = max(0, _ACTIVE_HEAVY_COUNT - 1)
+
         job.state = "done"
         job.finished_ts = time.time()
-
-        active_id = _ACTIVE_BY_PROFILE.get(job.profile_id)
-        if active_id == job_id:
-            _ACTIVE_BY_PROFILE.pop(job.profile_id, None)
 
     _log_queue_event(job, "done", note=note)
     return job
@@ -258,10 +225,9 @@ def mark_job_done(job_id: int, note: Optional[str] = None) -> Optional[Job]:
 
 def mark_job_failed(job_id: int, error: str) -> Optional[Job]:
     """
-    Mark a job as failed.
-
-    Similar to mark_job_done, but with state="failed" and an error message.
+    Mark job as failed and release resources.
     """
+    global _ACTIVE_HEAVY_COUNT
     error = (error or "").strip()
 
     with _LOCK:
@@ -269,13 +235,17 @@ def mark_job_failed(job_id: int, error: str) -> Optional[Job]:
         if not job:
             return None
 
+        if job.state == "running":
+            active_id = _ACTIVE_BY_PROFILE.get(job.profile_id)
+            if active_id == job_id:
+                _ACTIVE_BY_PROFILE.pop(job.profile_id, None)
+            
+            if job.is_heavy:
+                _ACTIVE_HEAVY_COUNT = max(0, _ACTIVE_HEAVY_COUNT - 1)
+
         job.state = "failed"
         job.error = error
         job.finished_ts = time.time()
-
-        active_id = _ACTIVE_BY_PROFILE.get(job.profile_id)
-        if active_id == job_id:
-            _ACTIVE_BY_PROFILE.pop(job.profile_id, None)
 
     _log_queue_event(job, "failed", note=error)
     return job
@@ -283,17 +253,16 @@ def mark_job_failed(job_id: int, error: str) -> Optional[Job]:
 
 def cancel_job(job_id: int, note: Optional[str] = None) -> Optional[Job]:
     """
-    Cancel a queued job (no-op if already started or finished).
-
-    This does not interrupt running jobs; it only removes jobs still in the queue.
+    Cancel a queued job. If running, use force_cancel (not impl here).
     """
     with _LOCK:
         job = _JOBS.get(job_id)
         if not job:
             return None
 
+        # If it's already running, we can't just "cancel" it without killing the thread
+        # (which Python makes hard). For now, we only allow cancelling queued jobs.
         if job.state != "queued":
-            # Only queued jobs can be cancelled cleanly
             return job
 
         q = _PROFILE_QUEUES.get(job.profile_id)
@@ -301,7 +270,6 @@ def cancel_job(job_id: int, note: Optional[str] = None) -> Optional[Job]:
             try:
                 q.remove(job_id)
             except ValueError:
-                # Already not in queue
                 pass
 
         job.state = "cancelled"
@@ -312,11 +280,7 @@ def cancel_job(job_id: int, note: Optional[str] = None) -> Optional[Job]:
 
 
 def get_job(job_id: int) -> Optional[Job]:
-    """
-    Fetch a job by ID.
-
-    Returns a shallow copy (new Job instance) so callers cannot mutate internals.
-    """
+    """Read-only copy of a job."""
     with _LOCK:
         job = _JOBS.get(job_id)
         if not job:
@@ -326,24 +290,8 @@ def get_job(job_id: int) -> Optional[Job]:
 
 def get_queue_snapshot(profile_id: Optional[str] = None) -> Dict[str, Any]:
     """
-    Return a JSON-serializable snapshot of the queues and active jobs.
-
-    If profile_id is provided, only that profile's data is returned.
-    Otherwise, all profiles are included.
-
-    Shape:
-
-      {
-        "profiles": {
-          "A": {
-            "active_job": {...} | None,
-            "queued_jobs": [...],
-          },
-          ...
-        }
-      }
-
-    This is useful for future dashboard integration (/queue inspector).
+    Get system state for Dashboard.
+    Includes Global VRAM usage stats.
     """
     with _LOCK:
         if profile_id:
@@ -351,7 +299,12 @@ def get_queue_snapshot(profile_id: Optional[str] = None) -> Dict[str, Any]:
         else:
             profiles = sorted(set(_PROFILE_QUEUES.keys()) | set(_ACTIVE_BY_PROFILE.keys()))
 
-        out: Dict[str, Any] = {"profiles": {}}
+        out: Dict[str, Any] = {
+            "global_heavy_active": _ACTIVE_HEAVY_COUNT,
+            "global_heavy_limit": MAX_CONCURRENT_HEAVY_REQUESTS,
+            "profiles": {}
+        }
+        
         for pid in profiles:
             q_ids = list(_PROFILE_QUEUES.get(pid, []))
             active_id = _ACTIVE_BY_PROFILE.get(pid)
@@ -359,9 +312,14 @@ def get_queue_snapshot(profile_id: Optional[str] = None) -> Dict[str, Any]:
             active_job = _JOBS.get(active_id) if active_id is not None else None
             queued_jobs = [asdict(_JOBS[jid]) for jid in q_ids if jid in _JOBS]
 
+            # Clean for JSON
+            if active_job:
+                active_job = asdict(active_job)
+
             out["profiles"][pid] = {
-                "active_job": asdict(active_job) if active_job else None,
+                "active_job": active_job,
                 "queued_jobs": queued_jobs,
+                "queue_length": len(queued_jobs)
             }
 
         return out

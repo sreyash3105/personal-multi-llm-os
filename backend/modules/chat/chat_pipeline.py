@@ -14,16 +14,8 @@ SMART CHAT (this file):
         1) Planner   -> builds a short JSON plan + notes
         2) Answer    -> uses plan + conversation (+ optional profile context) to generate response
         3) Judge     -> lightweight self-check (confidence + conflict + summary)
-    - Logs stage timings via history_logger as pipeline_timing records:
-        - stage = "chat_planner"
-        - stage = "chat_smart"
-        - stage = "chat_judge"
-
-V3.4.x additions:
-- Shared timeout + retry via timeout_policy.run_with_retries
-- Per-profile job queue integration via queue_manager:
-    - At most one smart-chat job runs per profile at a time.
-    - Additional requests for the same profile are queued FIFO.
+    - Logs stage timings via history_logger as pipeline_timing records.
+    - UPDATED: Now logs full 'trace' (Plan -> Answer -> Judge) to history for the Dashboard.
 """
 
 import json
@@ -49,7 +41,6 @@ from backend.modules.jobs.queue_manager import (
 )
 
 
-
 # =========================
 # Concurrency + timing
 # =========================
@@ -73,16 +64,17 @@ def _log_chat_timing(
     Shows up in the dashboard as 'pipeline_timing'.
     """
     try:
-        history_logger.log(
-            {
-                "kind": "pipeline_timing",
-                "stage": stage,
-                "model": model_name,
-                "duration_s": round(float(duration_s), 3),
-                "status": status,
-                "error": error,
-            }
-        )
+        if history_logger:
+            history_logger.log(
+                {
+                    "kind": "pipeline_timing",
+                    "stage": stage,
+                    "model": model_name,
+                    "duration_s": round(float(duration_s), 3),
+                    "status": status,
+                    "error": error,
+                }
+            )
     except Exception:
         # Must never break chat.
         pass
@@ -91,11 +83,6 @@ def _log_chat_timing(
 def _run_with_timeout(fn, stage: str, model_name: str):
     """
     Stage-level timeout + retry wrapper for planner / answer / judge.
-
-    Uses the shared timeout_policy.run_with_retries helper to ensure:
-    - per-attempt timeout (OLLAMA_REQUEST_TIMEOUT_SECONDS)
-    - bounded retries with simple backoff
-    - no behaviour change beyond "best-effort retry on transient failure".
     """
     start = time.monotonic()
     status = "ok"
@@ -128,13 +115,6 @@ def _run_with_timeout(fn, stage: str, model_name: str):
 def _render_message_for_prompt(msg: Dict[str, Any]) -> str:
     """
     Render a stored chat message into a compact text line for the LLM prompt.
-
-    Special handling for vision messages:
-
-      __IMG__<mime>|<base64>\n<caption>
-
-    We strip the base64 blob entirely and keep only a short marker + caption so
-    the model understands an image was involved, without polluting the prompt.
     """
     role = (msg.get("role") or "user").upper()
     text = msg.get("text") or ""
@@ -169,16 +149,6 @@ def _build_conversation_block(messages: List[Dict[str, Any]], latest_user_text: 
 def _run_chat_judge(user_prompt: str, answer: str, model_name: str) -> Dict[str, Any]:
     """
     Lightweight judge for smart chat.
-
-    Returns a dict compatible with the dashboard expectation:
-
-      {
-        "confidence_score": int | None,
-        "conflict_score": int | None,
-        "judgement_summary": str,
-        "raw_response": str,
-        "parse_error": str | None,
-      }
     """
     if not answer:
         return {
@@ -272,22 +242,8 @@ def run_chat_smart(
 ) -> Dict[str, Any]:
     """
     SMART CHAT = planner → answer → judge
-
-    - Planner: builds a short high-level plan + notes.
-    - Answer: uses that plan + conversation + optional profile context to respond.
-    - Judge: scores the final answer for confidence/conflict.
-
-    All steps use SMART_CHAT_MODEL_NAME and are stage-timed.
-    Concurrency is bounded by _SMART_CHAT_SEMAPHORE.
-
-    context_block:
-        Optional profile-aware context string (e.g. from profile_kb.build_profile_context),
-        already constructed by the caller (chat_ui).
-
-    V3.4.x queue integration:
-        - Each call enqueues a "chat_smart" job for the given profile.
-        - Only one job per profile runs at a time; others wait until their job
-          is marked "running" in the queue.
+    
+    Now includes full trace logging to history.
     """
     model_name = SMART_CHAT_MODEL_NAME
     convo_block = _build_conversation_block(messages, user_prompt)
@@ -315,36 +271,41 @@ def run_chat_smart(
 
     acquired = try_acquire_next_job(profile_id)
     if not acquired or acquired.id != job.id:
-        # Another job for this profile is active or ahead of us.
-        # Wait until THIS job becomes "running".
         while True:
             snapshot = get_job(job.id)
             if snapshot is None:
-                # Job disappeared unexpectedly; abort with a generic error.
                 answer_text = "(This smart chat job was cancelled or lost in the queue.)"
                 answer_error = "queue_lost_job"
                 break
             if snapshot.state == "running":
                 break
             if snapshot.state in ("done", "failed", "cancelled"):
-                # Job was finished elsewhere; don't run it again.
                 answer_text = "(This smart chat job was already finished in another worker.)"
                 answer_error = "queue_job_already_finished"
                 break
             time.sleep(0.05)
 
-    if answer_error in ("queue_lost_job", "queue_job_already_finished"):
+    if answer_error:
         try:
             mark_job_failed(job.id, answer_error)
         except Exception:
             pass
-        judge_payload = _run_chat_judge(user_prompt=user_prompt, answer=answer_text, model_name=model_name)
+        # Even on error, we log what we have so far
+        if history_logger:
+            history_logger.log({
+                "mode": "chat_smart",
+                "status": "error",
+                "original_prompt": user_prompt,
+                "final_output": answer_text,
+                "error": answer_error
+            })
+        
         return {
             "answer": answer_text,
             "plan": "",
-            "judge": judge_payload,
+            "judge": {},
             "model_used": model_name,
-            "planner_error": planner_error,
+            "planner_error": None,
             "answer_error": answer_error,
         }
 
@@ -372,6 +333,7 @@ Your job:
 Return STRICT JSON ONLY:
 
 {
+  "title": "<short 3-5 word title of the plan>",
   "plan": "<short stepwise plan>",
   "notes": "<risks / unknowns / extra thoughts>"
 }
@@ -405,13 +367,21 @@ JSON:
             if "{" in candidate and "}" in candidate:
                 candidate = candidate[candidate.find("{"): candidate.rfind("}") + 1]
             data = json.loads(candidate)
-            plan_text = str(data.get("plan") or "").strip()
+            
+            # Extract structured plan data
+            plan_title = str(data.get("title") or "Chat Response Plan").strip()
+            plan_steps = str(data.get("plan") or "").strip()
             notes_text = str(data.get("notes") or "").strip()
+            
+            # Format plan for the Answer model
+            plan_text = plan_steps
             if notes_text:
                 plan_text = (plan_text + "\n\nNotes:\n" + notes_text).strip()
+                
         except Exception as e:
             planner_error = str(e)
             plan_text = planner_raw or ""
+            plan_title = "Planner Error"
 
         if not plan_text:
             plan_text = "No structured plan available. Respond as helpfully as possible."
@@ -466,29 +436,10 @@ ASSISTANT:
                 answer_error = "Empty answer from model."
         except Exception as e:
             answer_error = str(e)
-            # Last-resort fallback: simple prompt without plan/context
-            fallback_prompt = """
-%s
-
-Current profile: %s
-
-Conversation so far:
-%s
-
-USER: %s
-
-ASSISTANT:
-""".strip() % (
-                CHAT_SYSTEM_PROMPT,
-                profile_name,
-                convo_block,
-                user_prompt,
-            )
+            # Last-resort fallback
+            fallback_prompt = f"""{CHAT_SYSTEM_PROMPT}\n\nUSER: {user_prompt}\n\nASSISTANT:"""
             try:
-                def _call_fallback():
-                    return call_ollama(fallback_prompt, model_name).strip()
-
-                answer_text = _run_with_timeout(_call_fallback, "chat_smart", model_name)
+                answer_text = call_ollama(fallback_prompt, model_name).strip()
             except Exception:
                 if not answer_text:
                     answer_text = "(Smart chat failed to generate a response.)"
@@ -499,7 +450,7 @@ ASSISTANT:
     # ------------- Judge stage (outside semaphore) -------------
     judge_payload = _run_chat_judge(user_prompt=user_prompt, answer=answer_text, model_name=model_name)
 
-    # Mark job done / failed in the queue (best-effort)
+    # Mark job done / failed in the queue
     try:
         if answer_error:
             mark_job_failed(job.id, answer_error)
@@ -507,6 +458,43 @@ ASSISTANT:
             mark_job_done(job.id, note="chat_smart completed")
     except Exception:
         pass
+
+    # =========================================================
+    # 🟢 NEW: Log full Trace to History (Planner -> Answer -> Judge)
+    # =========================================================
+    if history_logger:
+        trace_payload = {
+            "planner": {
+                "title": plan_title if 'plan_title' in locals() else "Smart Chat Plan",
+                "content": plan_text,
+                "confidence": 1.0, # Placeholder, smart chat planner implies confidence
+                "error": planner_error
+            },
+            "worker": [
+                {
+                    "step": "response_generation",
+                    "result": answer_text,
+                    "error": answer_error
+                }
+            ],
+            "risk_assessment": {
+                "risk_level": 1.0, 
+                "reason": "Chat mode (text generation only)",
+                "tags": ["chat"]
+            },
+            "judge": judge_payload
+        }
+        
+        history_logger.log({
+            "mode": "chat_smart",
+            "original_prompt": user_prompt,
+            "final_output": answer_text,
+            "trace": trace_payload,
+            "risk": {"risk_level": 1.0}, # top-level summary for dashboard list
+            "chat_id": chat_id,
+            "profile_id": profile_id
+        })
+    # =========================================================
 
     return {
         "answer": answer_text,

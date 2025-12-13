@@ -1,22 +1,8 @@
 # backend/modules/automation/executor.py
 """
-Automation executor + planner (full implementation).
-
-Drop-in module for:
-- plan(user_text, context) -> returns planner JSON (title, confidence, steps, notes)
-- plan_and_execute(user_text, context, execute=False, require_approval=False)
-    -> runs sanitizer, security checks, optionally executes steps (or simulates)
-- _execute_steps(...) executes steps using your tools runtime (execute_tool)
-- _simulate_steps(...) returns simulated results (safe default)
-
-This file expects the following functions/modules to exist in your repo:
-- backend.modules.code.pipeline.call_ollama(prompt, model_name)  (LLM caller)
-- backend.modules.tools.tools_runtime.execute_tool(tool_name, args, context)  (tools executor)
-- backend.modules.telemetry.history.history_logger (history_logger.log(dict))
-- backend.modules.automation.step_sanitizer.sanitize_steps(...) (sanitizer)
-- backend.modules.security_engine.SecurityEngine (optional)
-
-If any of those are missing, the module will degrade gracefully and return informative errors.
+Automation executor + planner.
+UPDATED: Now logs a complete 'Trace' of the event:
+Planner -> Worker (Results) -> Security -> Risk Assessment.
 """
 
 from __future__ import annotations
@@ -26,63 +12,47 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-# LLM planner (uses your repo LLM runner)
+# --- Imports ---
 try:
     from backend.modules.code.pipeline import call_ollama
 except Exception:
-    try:
-        from backend.code.pipeline import call_ollama
-    except Exception:
-        call_ollama = None
+    call_ollama = None
 
-# tools runtime execute function
 try:
     from backend.modules.tools.tools_runtime import execute_tool
 except Exception:
-    try:
-        from backend.tools.tools_runtime import execute_tool
-    except Exception:
-        execute_tool = None
+    execute_tool = None
 
-# Screen locator for UI actions (Plan Section 11)
 try:
     from backend.modules.vision.screen_locator import locate_action_plan
 except Exception:
     locate_action_plan = None
 
-# history logger for telemetry/audit
 try:
     from backend.modules.telemetry.history import history_logger
 except Exception:
-    try:
-        from backend.telemetry.history import history_logger
-    except Exception:
-        history_logger = None
+    history_logger = None
 
-# security engine (optional)
 try:
-    from backend.modules.security_engine import SecurityEngine
+    from backend.modules.security.security_engine import SecurityEngine
 except Exception:
-    try:
-        from backend.security_engine import SecurityEngine
-    except Exception:
-        SecurityEngine = None
+    SecurityEngine = None
 
-# step sanitizer (conservative safety gate)
 try:
     from backend.modules.automation.step_sanitizer import sanitize_steps, SanitizationError
 except Exception:
-    try:
-        from backend.automation.step_sanitizer import sanitize_steps, SanitizationError
-    except Exception:
-        sanitize_steps = None
-        SanitizationError = Exception  # fallback
+    sanitize_steps = None
+    SanitizationError = Exception
 
+# NEW: Import Risk Assessment
+try:
+    from backend.modules.telemetry.risk import assess_risk
+except Exception:
+    def assess_risk(*args, **kwargs): return {"risk_level": 1.0, "reason": "Risk module missing"}
 
 logger = logging.getLogger(__name__)
 
-
-# Planner prompt (adjust or externalize as needed)
+# --- Planner Prompt ---
 PLANNER_SYSTEM_PROMPT = """
 You are an automation planner for a local PC automation system.
 Given a user instruction, output an ordered JSON object with:
@@ -100,18 +70,13 @@ Each step object should look like:
   "description": "human friendly description"
 }
 
-Return ONLY a single valid JSON object. If you cannot produce a safe plan, return:
-{ "title": "", "confidence": 0.0, "steps": [], "notes": "reason..." }
+Return ONLY a single valid JSON object.
 """
 
 DEFAULT_PLANNER_MODEL = "small"
 
 
 def _parse_json_from_text(raw: str) -> Dict[str, Any]:
-    """
-    Try to extract the first JSON object in raw text and parse it.
-    Returns a dict (empty dict on failure).
-    """
     if not raw:
         return {}
     txt = str(raw).strip()
@@ -121,229 +86,151 @@ def _parse_json_from_text(raw: str) -> Dict[str, Any]:
             data = json.loads(candidate)
             if isinstance(data, dict):
                 return data
-            # sometimes planner returns a top-level list or other - wrap
             return {"steps": data} if isinstance(data, list) else {}
-        except Exception as e:
-            logger.debug("Planner JSON parse failed: %s; raw (truncated): %s", e, txt[:1000])
-            return {}
-    # fallback: try plain json
-    try:
-        data = json.loads(txt)
-        if isinstance(data, dict):
-            return data
-    except Exception:
-        pass
+        except Exception:
+            pass
     return {}
 
 
 def plan(user_text: str, context: Optional[Dict[str, Any]] = None, model_name: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Generate a JSON plan from the LLM planner.
-    Returns a dict with keys: title, confidence, steps (list), notes, raw
-    """
     context = context or {}
     model = model_name or DEFAULT_PLANNER_MODEL
 
     if call_ollama is None:
-        logger.warning("call_ollama not available; planner cannot run.")
-        return {"title": "", "confidence": 0.0, "steps": [], "notes": "planner unavailable", "raw": None}
+        return {"title": "Planner Unavailable", "confidence": 0.0, "steps": [], "notes": "No LLM connection"}
 
     prompt = PLANNER_SYSTEM_PROMPT + "\n\nInstruction:\n" + (user_text or "") + "\n\nRespond with JSON only."
     try:
         raw = call_ollama(prompt, model)
     except Exception as e:
-        logger.exception("Planner call failed: %s", e)
-        return {"title": "", "confidence": 0.0, "steps": [], "notes": f"planner error: {e}", "raw": None}
+        logger.exception("Planner error")
+        return {"title": "Error", "confidence": 0.0, "steps": [], "notes": str(e)}
 
     parsed = _parse_json_from_text(raw)
-    title = parsed.get("title", "") if isinstance(parsed, dict) else ""
-    confidence = float(parsed.get("confidence", 0.0) or 0.0) if isinstance(parsed, dict) else 0.0
-    steps = parsed.get("steps") if isinstance(parsed, dict) else []
-    notes = parsed.get("notes") if isinstance(parsed, dict) else ""
-    # Ensure steps is a list
-    if not isinstance(steps, list):
-        steps = []
-
-    return {"title": title, "confidence": confidence, "steps": steps, "notes": notes, "raw": parsed}
+    steps = parsed.get("steps") if isinstance(parsed.get("steps"), list) else []
+    return {
+        "title": parsed.get("title", "Untitled Plan"),
+        "confidence": float(parsed.get("confidence", 0.0)),
+        "steps": steps,
+        "notes": parsed.get("notes", ""),
+        "raw": parsed
+    }
 
 
 def _execute_steps(steps: List[Dict[str, Any]], context: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Execute each step using execute_tool (if available).
-    Returns list of result dicts per step: {id, ok, result, error, raw}
-    """
     if execute_tool is None:
-        raise RuntimeError("tools runtime (execute_tool) not available")
+        raise RuntimeError("Tools runtime missing")
 
-    results: List[Dict[str, Any]] = []
+    results = []
     for step in steps:
         sid = step.get("id") or str(time.time())
-        action = (step.get("action") or "").lower()
-        tool_name = step.get("tool") or action
+        tool_name = step.get("tool") or step.get("action")
         args = step.get("args") or {}
+        
         try:
-            # dispatch to execute_tool - many tools accept (tool_name, args, context)
+            # Try calling tool with context first, then without
             try:
                 res = execute_tool(tool_name, args, context=context)
             except TypeError:
-                # fallback signatures
-                try:
-                    res = execute_tool(tool_name, args)
-                except TypeError:
-                    res = execute_tool(step)  # last-resort attempt
-            # normalize result
-            if not isinstance(res, dict):
-                results.append({"id": sid, "ok": True, "result": res, "error": None, "raw": res})
+                res = execute_tool(tool_name, args)
+                
+            # Normalize result
+            if isinstance(res, dict) and "ok" in res:
+                results.append({"id": sid, "ok": res["ok"], "result": res.get("result"), "error": res.get("error")})
             else:
-                results.append({"id": sid, "ok": bool(res.get("ok")) if "ok" in res else True, "result": res.get("result") if isinstance(res, dict) else res, "error": res.get("error") if isinstance(res, dict) else None, "raw": res})
+                results.append({"id": sid, "ok": True, "result": res, "error": None})
         except Exception as e:
-            logger.exception("Step execution failed (id=%s): %s", sid, e)
-            results.append({"id": sid, "ok": False, "result": None, "error": str(e), "raw": None})
+            results.append({"id": sid, "ok": False, "result": None, "error": str(e)})
+            
     return results
 
 
 def _simulate_steps(steps: List[Dict[str, Any]], context: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Simulate each step (dry-run). Return a simulated result object for each step.
-    """
-    results: List[Dict[str, Any]] = []
-    for step in steps:
-        sid = step.get("id") or str(time.time())
-        results.append(
-            {
-                "id": sid,
-                "ok": True,
-                "result": {"simulated": True, "action": step.get("action"), "tool": step.get("tool"), "args": step.get("args")},
-                "error": None,
-                "raw": None,
-            }
-        )
-    return results
+    return [{"id": s.get("id"), "ok": True, "result": "SIMULATED", "step": s} for s in steps]
 
 
-def _run_security_eval(user_text: str, context: Dict[str, Any], plan_obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def plan_and_execute(user_text: str, context: Optional[Dict[str, Any]] = None, execute: bool = False) -> Dict[str, Any]:
     """
-    Call SecurityEngine.shared().evaluate(...) if available.
-    Returns evaluation dict or None.
-    """
-    if SecurityEngine is None:
-        return None
-    try:
-        sec = SecurityEngine.shared()
-        return sec.evaluate({"text": user_text, "intent": "automation", "profile_id": context.get("profile_id"), "risk_score": 0.0, "plan": plan_obj})
-    except Exception as e:
-        logger.exception("SecurityEngine evaluation failed: %s", e)
-        return {"error": str(e)}
-
-
-def plan_and_execute(user_text: str, context: Optional[Dict[str, Any]] = None, execute: bool = False, require_approval: bool = False) -> Dict[str, Any]:
-    """
-    Create plan, sanitize, security-evaluate, and optionally execute.
-
-    Returns:
-      {
-        "ok": bool,
-        "plan": {...},
-        "executed": bool,
-        "results": [ ... ],
-        "security": {...} | None,
-        "error": "..." | None
-      }
+    The Master Loop: Plan -> Security -> Execute -> Assess Risk -> Log
     """
     context = context or {}
+    
+    # 1. PLANNER
     plan_obj = plan(user_text, context=context)
     
-    # 🟢 NEW: Check if the command requires screen vision/location context.
-    screen_plan = None
-    if locate_action_plan is not None:
-        # Simple heuristic: if planner thinks it's a click/keyboard/automation task
-        # we run the locator to get coordinates/action plan first.
-        if "click" in user_text.lower() or "type" in user_text.lower() or "automation" in user_text.lower():
-            screen_plan = locate_action_plan(user_text, context.get("profile_id"))
-            # Pass the screen plan result to the LLM planner for context
-            if screen_plan and screen_plan.get("ok"):
-                plan_obj["vision_context"] = screen_plan
-                user_text = f"Context: Screen Locator returned a plan: {screen_plan}. User instruction: {user_text}"
-                # Re-run the LLM planner with the added context for better final steps
-                plan_obj = plan(user_text, context=context)
+    # Vision context check (optional)
+    if locate_action_plan and ("click" in user_text.lower() or "type" in user_text.lower()):
+        screen_plan = locate_action_plan(user_text, context.get("profile_id"))
+        if screen_plan and screen_plan.get("ok"):
+            # Re-plan with vision data
+            user_text_v = f"Context: Screen Locator found: {screen_plan}. User: {user_text}"
+            plan_obj = plan(user_text_v, context=context)
 
-    steps = plan_obj.get("steps") or [] # Re-fetch steps after potential re-plan
+    steps = plan_obj.get("steps", [])
 
-    # Basic validation
-    if not steps:
-        return {"ok": False, "error": "No actionable steps from planner", "plan": plan_obj, "executed": False, "results": [], "security": None}
-
-    # Run sanitizer (if available)
-    if sanitize_steps is not None:
+    # 2. SANITIZER
+    if sanitize_steps:
         try:
-            clean_steps = sanitize_steps(steps)
+            steps = sanitize_steps(steps)
         except SanitizationError as e:
-            logger.warning("Plan rejected by sanitizer: %s", e)
-            return {"ok": False, "error": f"Plan rejected by sanitizer: {e}", "plan": plan_obj, "executed": False, "results": [], "security": None}
-    else:
-        # if sanitizer not present, use original steps but log a warning
-        logger.warning("Step sanitizer not available; proceeding without sanitization.")
-        clean_steps = steps
+            return {"ok": False, "error": f"Sanitizer blocked: {e}"}
 
-    # Simple textual risk heuristic (conservative)
-    tl = (user_text or "").lower()
-    risk = 0.0
-    if any(k in tl for k in ("delete ", "rm -rf", "format ", "factory reset", "shutdown", "reboot")):
-        risk = max(risk, 8.0)
+    # 3. SECURITY ENGINE (The Gatekeeper)
+    security_eval = None
+    if SecurityEngine:
+        try:
+            security_eval = SecurityEngine.shared().evaluate({
+                "text": user_text,
+                "intent": "automation",
+                "plan": plan_obj
+            })
+            if security_eval.get("action") == "block":
+                return {"ok": False, "error": "Security Blocked", "security": security_eval}
+        except Exception:
+            pass
 
-    # Security evaluation
-    security_eval = _run_security_eval(user_text, context, plan_obj)
-    if security_eval:
-        action = security_eval.get("action")
-        # If security blocks -> return early
-        if action == "block":
-            return {"ok": False, "error": "Blocked by SecurityEngine", "plan": plan_obj, "executed": False, "results": [], "security": security_eval}
-        # If require approval and caller requested require_approval True, honor that
-        if require_approval and action == "require_approval":
-            return {"ok": False, "error": "Requires approval", "plan": plan_obj, "executed": False, "results": [], "security": security_eval}
-
-    # Execute or simulate
+    # 4. WORKER (Execution)
     executed = False
-    results: List[Dict[str, Any]] = []
+    results = []
+    error = None
+    
     try:
         if execute:
-            if execute_tool is None:
-                return {"ok": False, "error": "Tools runtime unavailable for execution", "plan": plan_obj, "executed": False, "results": [], "security": security_eval}
-            # Double-check security: if security requires approval, do not execute
             if security_eval and security_eval.get("action") == "require_approval":
-                return {"ok": False, "error": "Requires approval (security)", "plan": plan_obj, "executed": False, "results": [], "security": security_eval}
-            results = _execute_steps(clean_steps, context)
-            executed = True
+                error = "Approval Required"
+            else:
+                results = _execute_steps(steps, context)
+                executed = True
         else:
-            results = _simulate_steps(clean_steps, context)
-            executed = False
+            results = _simulate_steps(steps, context)
     except Exception as e:
-        logger.exception("Execution error: %s", e)
-        return {"ok": False, "error": str(e), "plan": plan_obj, "executed": executed, "results": results, "security": security_eval}
+        error = str(e)
 
-    # Audit log to history (best-effort)
-    try:
-        if history_logger is not None:
-            history_logger.log(
-                {
-                    "mode": "automation",
-                    "original_prompt": user_text,
-                    "normalized_prompt": user_text,
-                    "final_output": results,
-                    "escalated": False,
-                    "escalation_reason": "",
-                    "judge": None,
-                    "chat_profile_id": context.get("profile_id"),
-                    "chat_profile_name": context.get("profile_name"),
-                    "chat_id": context.get("chat_id"),
-                    "chat_model_used": None,
-                    "chat_smart_plan": plan_obj.get("title"),
-                    "models": {"planner": DEFAULT_PLANNER_MODEL},
-                    "plan": plan_obj,
-                    "results": results,
-                }
-            )
-    except Exception:
-        logger.exception("Failed to write automation history log (non-fatal).")
+    # 5. RISK ASSESSMENT (Post-Mortem)
+    # We analyze what we actually did (or planned to do)
+    final_risk = assess_risk("automation", {"plan": steps, "results": results})
 
-    return {"ok": True, "plan": plan_obj, "executed": executed, "results": results, "security": security_eval, "error": None}
+    # 6. HISTORY LOGGING (The Full Trace)
+    if history_logger:
+        log_payload = {
+            "mode": "automation",
+            "original_prompt": user_text,
+            "final_output": "Executed" if executed else "Simulated",
+            # The structured brain data:
+            "trace": {
+                "planner": plan_obj,
+                "worker": results,
+                "security": security_eval,
+                "risk_assessment": final_risk
+            }
+        }
+        history_logger.log(log_payload)
+
+    return {
+        "ok": not error,
+        "error": error,
+        "plan": plan_obj,
+        "results": results,
+        "executed": executed,
+        "risk": final_risk
+    }

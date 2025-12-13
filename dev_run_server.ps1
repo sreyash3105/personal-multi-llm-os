@@ -1,40 +1,34 @@
 param(
-    [int]$Port = 6969   # ⬅ change default port here
+    [int]$Port = 6969
 )
 
 $ErrorActionPreference = "Stop"
-
-# Move to project root
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
 
 Write-Host "Project root: $root"
 
-# ------------------------------
-#  Activate virtual environment
-# ------------------------------
-if (Test-Path ".venv\Scripts\Activate.ps1") {
-    Write-Host "Activating .venv ..."
-    . ".venv\Scripts\Activate.ps1"
-}
-elseif (Test-Path "venv\Scripts\Activate.ps1") {
-    Write-Host "Activating venv ..."
-    . "venv\Scripts\Activate.ps1"
-}
-else {
-    Write-Host "⚠ No virtual environment found → using global python" -ForegroundColor Yellow
+# --- SMART ENVIRONMENT DETECTION ---
+$TargetEnv = "ai-gpu"
+
+if (Get-Command "conda" -ErrorAction SilentlyContinue) {
+    $CurrentEnv = $env:CONDA_DEFAULT_ENV
+    
+    if ($CurrentEnv -eq $TargetEnv) {
+        Write-Host "Active Conda environment: $TargetEnv" -ForegroundColor Green
+    } else {
+        Write-Host "---------------------------------------------------" -ForegroundColor Yellow
+        Write-Host "WARNING: Wrong Environment Detected" -ForegroundColor Yellow
+        Write-Host "Current: $CurrentEnv" -ForegroundColor Yellow
+        Write-Host "Target:  $TargetEnv" -ForegroundColor Yellow
+        Write-Host "Please run: conda activate $TargetEnv" -ForegroundColor Yellow
+        Write-Host "---------------------------------------------------" -ForegroundColor Yellow
+    }
 }
 
-# ------------------------------
-#  Ensure backend is importable
-# ------------------------------
+# --- LAUNCH ---
 $env:PYTHONPATH = $root
-Write-Host "PYTHONPATH = $env:PYTHONPATH"
-
-# ------------------------------
-#  Start server with auto-reload
-# ------------------------------
-Write-Host "🚀 Starting Uvicorn on port $Port (reload enabled)" -ForegroundColor Green
+Write-Host "Starting Local AI OS on port $Port..." -ForegroundColor Cyan
 
 python -m uvicorn backend.code_server:app `
     --host 0.0.0.0 `

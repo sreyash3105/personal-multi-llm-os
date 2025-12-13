@@ -30,7 +30,7 @@ SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1080
 
 # Execution mode
-_REAL_MODE = False
+_REAL_MODE = True
 
 # Abort token (set True to stop current movement)
 _abort_flag = False
