@@ -5,32 +5,45 @@ import threading
 import queue
 import logging
 import io
+import subprocess
 import tkinter as tk
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
 from pynput import keyboard
+from pathlib import Path
 
 # --- [START FIX] NVIDIA DLL PATHS ---
-# This determines if the script crashes. It must run BEFORE importing backend modules.
-libs_paths = [
-    os.path.join(sys.prefix, 'Lib', 'site-packages', 'nvidia', 'cudnn', 'bin'),
-    os.path.join(sys.prefix, 'Lib', 'site-packages', 'nvidia', 'cublas', 'bin'),
-    os.path.join(sys.prefix, 'Lib', 'site-packages', 'nvidia', 'cudart', 'bin'),
-]
-for lib_path in libs_paths:
-    if os.path.exists(lib_path) and lib_path not in os.environ['PATH']:
-        os.environ['PATH'] = lib_path + os.pathsep + os.environ['PATH']
+# Ensures GPU acceleration works before loading heavy AI libraries
+# This block must run first.
+try:
+    base_nvidia_path = Path(sys.prefix) / 'Lib' / 'site-packages' / 'nvidia'
+    libs_paths = [
+        base_nvidia_path / 'cudnn' / 'bin',
+        base_nvidia_path / 'cublas' / 'bin',
+        base_nvidia_path / 'cudart' / 'bin',
+    ]
+    for lib_path in libs_paths:
+        if lib_path.exists() and str(lib_path) not in os.environ['PATH']:
+            os.add_dll_directory(str(lib_path))
+            os.environ['PATH'] = str(lib_path) + os.pathsep + os.environ['PATH']
+except Exception as e:
+    print(f"Warning: GPU DLL linking failed: {e}")
 # --- [END FIX] ----------------------
 
 # --- Backend Setup ---
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from backend.modules.stt.stt_service import STTService
-from backend.modules.planner.planner import Planner
-from backend.modules.automation.executor import plan_and_execute
-from backend.modules.chat.chat_pipeline import run_chat_smart
-from backend.modules.chat.chat_storage import get_profile
+# Import your modules (Ensure these files exist in your folder structure)
+try:
+    from backend.modules.stt.stt_service import STTService
+    from backend.modules.planner.planner import Planner
+    from backend.modules.automation.executor import plan_and_execute
+    from backend.modules.chat.chat_pipeline import run_chat_smart
+    from backend.modules.chat.chat_storage import get_profile
+except ImportError as e:
+    print(f"CRITICAL ERROR: Missing backend modules. {e}")
+    sys.exit(1)
 
 # --- Config ---
 PROFILE_ID = "A"  # Default profile
@@ -41,9 +54,19 @@ SAMPLE_RATE = 16000
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger("GhostAgent")
 
+# --- Global State ---
+overlay = None
+is_listening = False
+audio_buffer = []
+current_keys = set()
+server_proc = None
+dash_proc = None
+
+# --- UI Class ---
 class OverlayWindow:
     """The Futuristic HUD Overlay"""
-    def __init__(self):
+    def __init__(self, cleanup_callback):
+        self.cleanup_callback = cleanup_callback
         self.root = tk.Tk()
         self.root.overrideredirect(True)  # No frame/borders
         self.root.attributes("-topmost", True)  # Always on top
@@ -74,6 +97,9 @@ class OverlayWindow:
         self.queue = queue.Queue()
         self.root.after(100, self._process_queue)
         
+        # Handle Close Event safely
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        
         # Hide initially
         self.root.withdraw()
 
@@ -89,19 +115,20 @@ class OverlayWindow:
                     self.label.config(text=text, fg=color)
                     self.root.deiconify()
                     if duration > 0:
-                        self.root.after(duration * 1000, self.root.withdraw)
+                        self.root.after(int(duration * 1000), self.root.withdraw)
         except queue.Empty:
             pass
         self.root.after(100, self._process_queue)
 
+    def on_close(self):
+        """Called when the user wants to exit"""
+        print("\n>>> EXIT COMMAND RECEIVED")
+        self.cleanup_callback()
+        self.root.destroy()
+        sys.exit(0)
+
     def start(self):
         self.root.mainloop()
-
-# --- Global State ---
-overlay = None
-is_listening = False
-audio_buffer = []
-current_keys = set()
 
 # --- Audio Logic ---
 def audio_callback(indata, frames, time, status):
@@ -112,17 +139,25 @@ def process_voice_command():
     """The Brain Logic: Audio -> Text -> Plan -> Action/Reply"""
     global audio_buffer
     
+    # Atomic Swap to prevent race conditions
     if not audio_buffer:
         return
 
+    local_buffer = audio_buffer
+    audio_buffer = [] 
+    
     overlay.show("Thinking...", color="#ffff00") # Yellow
     
     # 1. Process Audio
-    recording = np.concatenate(audio_buffer, axis=0)
-    wav_io = io.BytesIO()
-    sf.write(wav_io, recording, SAMPLE_RATE, format='WAV')
-    wav_bytes = wav_io.getvalue()
-    audio_buffer = [] # Clear
+    try:
+        recording = np.concatenate(local_buffer, axis=0)
+        wav_io = io.BytesIO()
+        sf.write(wav_io, recording, SAMPLE_RATE, format='WAV')
+        wav_bytes = wav_io.getvalue()
+    except Exception as e:
+        overlay.show(f"Ear Malfunction: {e}", color="#ff0000", duration=4)
+        print(f"ERROR DETAILS: {e}")
+        return
 
     try:
         stt = STTService()
@@ -205,20 +240,78 @@ def on_release(key):
         is_listening = False
         threading.Thread(target=process_voice_command).start()
 
-# --- Entry Point ---
+# --- Bootloader Logic ---
+def boot_system_services():
+    """
+    Auto-starts the Brain (Server) and Dashboard if they aren't running.
+    """
+    print(">>> 👻 GHOST OS BOOT SEQUENCE STARTED")
+
+    # 1. Start the Brain (API Server)
+    print("   [1/3] Igniting Brain (code_server.py)...")
+    try:
+        # Uses python from current env
+        s_proc = subprocess.Popen(
+            [sys.executable, "backend/code_server.py"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        )
+    except Exception as e:
+        print(f"   !!! Failed to start Brain: {e}")
+        s_proc = None
+
+    # 2. Start the Watchtower (Dashboard)
+    print("   [2/3] Launching Watchtower (dashboard_app.py)...")
+    time.sleep(2.0) # Wait for server
+    try:
+        d_proc = subprocess.Popen(
+            [sys.executable, "dashboard_app.py"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        )
+    except Exception as e:
+        print(f"   !!! Failed to start Dashboard: {e}")
+        d_proc = None
+    
+    return s_proc, d_proc
+
+def global_cleanup():
+    """Kills background processes when main app closes"""
+    print("\n>>> SHUTTING DOWN...")
+    if server_proc:
+        print("    Killing Brain...")
+        server_proc.terminate()
+    if dash_proc:
+        print("    Killing Dashboard...")
+        dash_proc.terminate()
+
+# --- Main Entry Point ---
 if __name__ == "__main__":
-    print("\n👻 GHOST AGENT INITIALIZED")
-    print("   Target: D:\\AIOS\\personal-multi-llm-os")
+    # A. Boot Backend Services
+    server_proc, dash_proc = boot_system_services()
+
+    print("   [3/3] Connecting Body (Overlay)...")
+    print("\n✅ GHOST AGENT ONLINE")
+    print(f"   Target: {os.getcwd()}")
     print("   Action: Hold [Ctrl + Alt + Space] to speak.")
     
-    # Start Audio Stream
-    stream = sd.InputStream(callback=audio_callback, channels=1, samplerate=SAMPLE_RATE)
-    stream.start()
+    # B. Start Audio Stream
+    try:
+        stream = sd.InputStream(callback=audio_callback, channels=1, samplerate=SAMPLE_RATE)
+        stream.start()
+    except Exception as e:
+        print(f"CRITICAL: Audio device failed. {e}")
 
-    # Start Keyboard Listener
+    # C. Start Keyboard Listener
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
 
-    # Start UI (Main Thread)
-    overlay = OverlayWindow()
-    overlay.start()
+    # D. Start UI (Blocking)
+    # This keeps the script running indefinitely
+    try:
+        overlay = OverlayWindow(cleanup_callback=global_cleanup)
+        overlay.start() 
+    except KeyboardInterrupt:
+        # Handles Ctrl+C in terminal
+        global_cleanup()
+        sys.exit(0)

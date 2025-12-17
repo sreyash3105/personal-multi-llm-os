@@ -7,6 +7,7 @@ REWRITTEN FOR STABILITY:
 - Prints explicit errors to stderr on failure.
 - Maintains dual-write (SQLite + JSONL) integrity.
 - FIX: log() accepts kwargs to support calls from stt_service.
+- FIX: Explicit connection closing to prevent file handle leaks.
 """
 
 import json
@@ -105,17 +106,22 @@ class HistoryLogger:
             print(f"[HISTORY] JSONL Write Error: {e}", file=sys.stderr)
 
     def _write_sqlite(self, entry: Dict[str, Any]) -> None:
-        """Primary write to SQLite."""
+        """Primary write to SQLite with proper cleanup."""
+        conn = None
         try:
             data_json = json.dumps(entry, ensure_ascii=False)
-            with _get_conn() as conn:
+            conn = _get_conn()
+            with conn: # Handles Commit/Rollback only
                 conn.execute(
                     "INSERT INTO history_records (ts, data_json) VALUES (?, ?);",
                     (entry.get("ts"), data_json),
                 )
-                conn.commit()
         except Exception as e:
             print(f"[HISTORY] SQLite Write Error: {e}", file=sys.stderr)
+        finally:
+            # CRITICAL FIX: Explicitly close the connection
+            if conn:
+                conn.close()
 
     def log(self, record: Optional[Dict[str, Any]] = None, **kwargs) -> None:
         """

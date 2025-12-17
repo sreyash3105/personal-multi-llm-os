@@ -73,7 +73,7 @@ Each step object should look like:
 Return ONLY a single valid JSON object.
 """
 
-DEFAULT_PLANNER_MODEL = "small"
+DEFAULT_PLANNER_MODEL = "llama3.1:8b"
 
 
 def _parse_json_from_text(raw: str) -> Dict[str, Any]:
