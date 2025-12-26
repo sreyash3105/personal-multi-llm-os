@@ -133,8 +133,37 @@ def extract_mode_and_prompt(raw_prompt: str) -> Tuple[str, str]:
     if first_line.startswith("///raw"): return "code_raw", rest.strip()
     if first_line.startswith("///review-only"): return "review_only", rest.strip()
     if first_line.startswith("///ctx") or first_line.startswith("///continue"): return "code_reviewed_ctx", rest.strip()
-    
+
     return DEFAULT_MODE, _sanitize_input_text(text)
+
+def extract_study_style_and_prompt(raw_prompt: str) -> Tuple[str, str]:
+    """
+    Extract study style and prompt from raw user input.
+
+    Supported styles: normal, short, deep, quiz
+    Default style: normal
+
+    Format: First line can specify style like "style: deep" or just the prompt.
+    """
+    if not raw_prompt: return "normal", ""
+    text = str(raw_prompt).replace("\r\n", "\n").strip()
+    if not text: return "normal", ""
+
+    lines = text.split("\n", 1)
+    first_line = lines[0].strip().lower()
+    rest = lines[1] if len(lines) > 1 else ""
+
+    # Check for style specification in first line
+    if first_line.startswith("style:"):
+        style_part = first_line[6:].strip()
+        if style_part in ["normal", "short", "deep", "quiz"]:
+            # When style is specified, use the rest as the prompt (even if empty)
+            return style_part, _sanitize_input_text(rest.strip())
+        # Invalid style specified, fall back to normal with full text as prompt
+        return "normal", _sanitize_input_text(text)
+
+    # No style specified, use default with full text as prompt
+    return "normal", _sanitize_input_text(text)
 
 # =========================
 # History context builder
@@ -170,9 +199,10 @@ User request:
     
     start = time.monotonic()
     status, error_msg = "ok", None
+    # Acquire semaphores BEFORE profile locks to prevent deadlock
+    _HEAVY_SEMAPHORE.acquire()
     profile_lock = _get_profile_lock(profile_id)
     if profile_lock: profile_lock.acquire()
-    _HEAVY_SEMAPHORE.acquire()
     try:
         def _call(): return call_ollama(coder_prompt, CODER_MODEL_NAME)
         return _clamp_output_text(_run_with_timeout(_call, "coder", CODER_MODEL_NAME))
@@ -181,8 +211,8 @@ User request:
         return f"# Coder failed: {e}"
     finally:
         _log_timing("coder", CODER_MODEL_NAME, time.monotonic() - start, status, error_msg)
-        _HEAVY_SEMAPHORE.release()
         if profile_lock: profile_lock.release()
+        _HEAVY_SEMAPHORE.release()
 
 def run_reviewer(original_prompt: str, draft_code: str, profile_id: Optional[str] = None) -> str:
     if not draft_code.strip(): return draft_code
@@ -190,9 +220,10 @@ def run_reviewer(original_prompt: str, draft_code: str, profile_id: Optional[str
     
     start = time.monotonic()
     status, error_msg = "ok", None
+    # Acquire semaphores BEFORE profile locks to prevent deadlock
+    _HEAVY_SEMAPHORE.acquire()
     profile_lock = _get_profile_lock(profile_id)
     if profile_lock: profile_lock.acquire()
-    _HEAVY_SEMAPHORE.acquire()
     try:
         def _call(): return call_ollama(reviewer_prompt, REVIEWER_MODEL_NAME)
         return _clamp_output_text(_run_with_timeout(_call, "reviewer", REVIEWER_MODEL_NAME))
@@ -201,44 +232,126 @@ def run_reviewer(original_prompt: str, draft_code: str, profile_id: Optional[str
         return f"# Reviewer failed: {e}\n{draft_code}"
     finally:
         _log_timing("reviewer", REVIEWER_MODEL_NAME, time.monotonic() - start, status, error_msg)
-        _HEAVY_SEMAPHORE.release()
         if profile_lock: profile_lock.release()
+        _HEAVY_SEMAPHORE.release()
 
 def run_judge(original_prompt: str, coder_output: str, reviewer_output: str, profile_id: Optional[str] = None) -> Dict[str, Any]:
     if not JUDGE_ENABLED:
-        return {"confidence_score": None, "conflict_score": None, "judgement_summary": "Disabled"}
-
-    judge_prompt = f"""{JUDGE_SYSTEM_PROMPT}
-USER_REQUEST: {original_prompt}
-CODER_ANSWER: {coder_output}
-REVIEWER_ANSWER: {reviewer_output}
-Return JSON: {{ "confidence_score": float, "conflict_score": float, "judgement_summary": "string" }}
-JSON:"""
+        return {"confidence_score": 5.0, "conflict_score": 5.0, "judgement_summary": "Judge disabled"}
 
     start = time.monotonic()
     status, error_msg = "ok", None
+    # Acquire semaphores BEFORE profile locks to prevent deadlock
+    _HEAVY_SEMAPHORE.acquire()
     profile_lock = _get_profile_lock(profile_id)
     if profile_lock: profile_lock.acquire()
-    _HEAVY_SEMAPHORE.acquire()
     try:
+        judge_prompt = f"""{JUDGE_SYSTEM_PROMPT}
+
+Original request:
+{original_prompt}
+
+Coder output:
+{coder_output}
+
+Reviewer output:
+{reviewer_output}
+
+Return JSON only:""".strip()
+
         def _call(): return call_ollama(judge_prompt, JUDGE_MODEL_NAME)
         raw = _run_with_timeout(_call, "judge", JUDGE_MODEL_NAME)
-        
-        candidate = raw[raw.find("{"):raw.rfind("}")+1] if "{" in raw else raw
-        data = json.loads(candidate)
-        
-        return {
-            "confidence_score": float(data.get("confidence_score", 0)),
-            "conflict_score": float(data.get("conflict_score", 0)),
-            "judgement_summary": data.get("judgement_summary", "No summary")
-        }
+
+        # Robust JSON parsing with validation
+        parsed_data = _parse_judge_response(raw)
+
+        return parsed_data
     except Exception as e:
         status, error_msg = "error", str(e)
-        return {"confidence_score": None, "conflict_score": None, "judgement_summary": f"Judge error: {e}"}
+        return {"confidence_score": 0.0, "conflict_score": 0.0, "judgement_summary": f"Judge failed: {e}"}
     finally:
         _log_timing("judge", JUDGE_MODEL_NAME, time.monotonic() - start, status, error_msg)
         _HEAVY_SEMAPHORE.release()
         if profile_lock: profile_lock.release()
+
+
+def _parse_judge_response(raw_response: str) -> Dict[str, Any]:
+    """
+    Robustly parse judge model response with comprehensive validation.
+
+    Expected JSON structure:
+    {
+        "confidence_score": int (1-10),
+        "conflict_score": int (1-10),
+        "judgement_summary": str
+    }
+
+    Returns validated dict or raises exception for retry.
+    """
+    if not raw_response or not isinstance(raw_response, str):
+        raise ValueError("Empty or invalid judge response")
+
+    # Extract JSON candidate - improved version of naive slicing
+    json_start = raw_response.find("{")
+    json_end = raw_response.rfind("}") + 1
+
+    if json_start == -1 or json_end <= json_start:
+        raise ValueError(f"No valid JSON object found in response (length: {len(raw_response)})")
+
+    json_candidate = raw_response[json_start:json_end]
+
+    # Validate JSON is not too long (prevent memory exhaustion)
+    if len(json_candidate) > 10000:  # 10KB limit
+        raise ValueError(f"JSON candidate too large: {len(json_candidate)} characters")
+
+    # Parse JSON with specific error handling
+    try:
+        data = json.loads(json_candidate)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in judge response: {e}") from e
+
+    # Validate structure is a dict
+    if not isinstance(data, dict):
+        raise ValueError(f"Judge response is not a JSON object: {type(data)}")
+
+    # Extract and validate required fields
+    confidence_score = data.get("confidence_score")
+    conflict_score = data.get("conflict_score")
+    judgement_summary = data.get("judgement_summary")
+
+    # Validate confidence_score
+    if confidence_score is None:
+        raise ValueError("Missing required field: confidence_score")
+    try:
+        confidence_score = int(confidence_score)
+        if not (1 <= confidence_score <= 10):
+            raise ValueError(f"confidence_score out of range (1-10): {confidence_score}")
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Invalid confidence_score: {confidence_score} - {e}") from e
+
+    # Validate conflict_score
+    if conflict_score is None:
+        raise ValueError("Missing required field: conflict_score")
+    try:
+        conflict_score = int(conflict_score)
+        if not (1 <= conflict_score <= 10):
+            raise ValueError(f"conflict_score out of range (1-10): {conflict_score}")
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Invalid conflict_score: {conflict_score} - {e}") from e
+
+    # Validate judgement_summary
+    if judgement_summary is None:
+        raise ValueError("Missing required field: judgement_summary")
+    if not isinstance(judgement_summary, str):
+        raise ValueError(f"judgement_summary is not a string: {type(judgement_summary)}")
+    if len(judgement_summary) > 1000:  # Reasonable length limit
+        judgement_summary = judgement_summary[:997] + "..."
+
+    return {
+        "confidence_score": float(confidence_score),
+        "conflict_score": float(conflict_score),
+        "judgement_summary": judgement_summary
+    }
 
 # =========================
 # 🟢 UPDATED: MASTER PIPELINE with JOB QUEUE
@@ -318,5 +431,51 @@ def run_smart_code_pipeline(user_prompt: str, profile_id: Optional[str] = None) 
         return {"final_code": f"# Pipeline Error: {e}", "judge": {}, "risk": {}, "error": str(e)}
 
 def run_study(user_prompt: str, style: str = "normal") -> str:
-    # Kept for compatibility
-    pass
+    """
+    Run study/tutoring mode with the specified style.
+
+    Args:
+        user_prompt: The topic or question to study
+        style: Teaching style - "normal", "short", "deep", or "quiz"
+
+    Returns:
+        Educational response from the study model
+    """
+    # Input validation
+    if not user_prompt or not isinstance(user_prompt, str):
+        return "Error: Empty or invalid study prompt provided"
+
+    if style not in ["normal", "short", "deep", "quiz"]:
+        return f"Error: Invalid style '{style}'. Supported styles: normal, short, deep, quiz"
+
+    # Sanitize input
+    user_prompt = _sanitize_input_text(user_prompt)
+
+    # Build the study prompt with system instructions and style context
+    study_prompt = f"""{STUDY_SYSTEM_PROMPT}
+
+Style requested: {style}
+
+User question/topic:
+{user_prompt}
+
+Please provide your educational response in the requested style.""".strip()
+
+    # Use concurrency guards and timing like other pipeline functions
+    start = time.monotonic()
+    status, error_msg = "ok", None
+    profile_lock = _get_profile_lock(None)  # Study doesn't use profile-specific locking
+    if profile_lock: profile_lock.acquire()
+    _HEAVY_SEMAPHORE.acquire()
+
+    try:
+        def _call(): return call_ollama(study_prompt, STUDY_MODEL_NAME)
+        result = _clamp_output_text(_run_with_timeout(_call, "study", STUDY_MODEL_NAME))
+        return result
+    except Exception as e:
+        status, error_msg = "error", str(e)
+        return f"Study failed: {e}"
+    finally:
+        _log_timing("study", STUDY_MODEL_NAME, time.monotonic() - start, status, error_msg)
+        _HEAVY_SEMAPHORE.release()
+        if profile_lock: profile_lock.release()

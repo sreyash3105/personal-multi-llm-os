@@ -1,116 +1,123 @@
-# ====================================
-# 🔒 PRIVACY — DO NOT PUBLISH
-# ====================================
+# ==================================================
+# PERSONAL MULTI-LLM OS — V5
+# Git Ignore (Authoritative)
+# ==================================================
 
-# Databases / logs / chat history / personal memory
+# --------------------------------------------------
+# 🔐 PRIVATE / RUNTIME STATE (NEVER COMMIT)
+# --------------------------------------------------
+
+# Runtime databases & memory
 data/
 history/
-*.sqlite3
-*.jsonl
-*.db
+telemetry/
+sessions/
 
-# Generated automatically
-logs/
+# SQLite artifacts
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# JSONL logs / traces
+*.jsonl
+
+# Runtime output / temp
 outputs/
+logs/
 cache/
 tmp/
-**/tmp/
-**/cache/
-**/__cache__/
 
-# Memory / telemetry
-telemetry_logs/
-memory/
-sessions/
-handover/
-reports/
-legacy/
+# --------------------------------------------------
+# 🧠 AI / MODEL ARTIFACTS (LOCAL ONLY)
+# --------------------------------------------------
+
+# Ollama / model storage
+ollama/
+models/
+*.gguf
+
+# Vision / audio temp files
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.bmp
+
+# --------------------------------------------------
+# 🧪 LEGACY / ARCHIVED (INTENTIONAL)
+# --------------------------------------------------
+
+legacy_dumps/
+
+# --------------------------------------------------
+# 🧪 DEV / EXPERIMENTAL (LOCAL ONLY)
+# --------------------------------------------------
+
+.continue/
 scratch/
+experiments/
+notebooks/
+*.ipynb
+.ipynb_checkpoints/
 
-# ====================================
-# 📄 INTERNAL DOCUMENTATION
-# ====================================
-
-# Hide everything in docs EXCEPT public readme
-docs/**
-!docs/public_readme.md
-
-# ====================================
-# 🧠 Python + Environment garbage
-# ====================================
+# --------------------------------------------------
+# 🐍 PYTHON
+# --------------------------------------------------
 
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
-.env
-.venv
+
+# Virtual environments
+.venv/
 venv/
-.env.*
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# --------------------------------------------------
+# 🧰 OS / IDE
+# --------------------------------------------------
+
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Jupyter / temporary files
-.ipynb_checkpoints/
-*.ipynb
-*.tmp
-*.log
-*.backup.md
-*.draft.md
-
-# ====================================
-# 🧩 Backend runtime junk
-# ====================================
-
-# HF hub cache (VERY IMPORTANT)
-# avoids uploading 10GB of model shards
-~/.cache/*
-*cache/huggingface/*
-hf_cache*/
-
-# Faster-whisper downloads
-*.bin
-*.pt
-*.onnx
-models/
-whisper-cache/
-whisper_models/
-
-# FFmpeg / audio temp files
-*.wav.tmp
-*.webm.tmp
-*.mp3.tmp
-
-# Uvicorn reload leftover files
-*.reload
-*.hotreload
-*.pid
-
-# ====================================
-# ⚙️ Build / Deployment / Editors
-# ====================================
-
-# PyInstaller / Build Artifacts (🟢 NEW)
-*.spec
-dist/
-build/
-manifest/
-
-# Node (if future UIs use npm/vite)
-node_modules/
-.bundle/
-.env.local
-
-# VSCode / PyCharm
 .vscode/
 .idea/
 *.code-workspace
 
-# ====================================
-# 🔥 Conda + virtual environments
-# ====================================
-ai-gpu/
-env/
-conda_env/
-*.conda
-*.yaml.lock
+# --------------------------------------------------
+# 🧪 TEST OUTPUTS
+# --------------------------------------------------
+
+.coverage
+htmlcov/
+pytest_cache/
+
+# --------------------------------------------------
+# 🚫 DO NOT IGNORE (DOCUMENTATION)
+# --------------------------------------------------
+# These MUST remain tracked:
+# backend/
+# ghost_agent.py
+# launcher.py
+# static/
+# test/
+# ARCHITECTURE.md
+# README.md
+# CONTEXT.md
+# DESIGN_DECISIONS.md
+# MODEL_ROUTING.md
+# DOCS.md
+# GhostOS.spec

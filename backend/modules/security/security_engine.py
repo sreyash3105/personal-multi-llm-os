@@ -38,6 +38,7 @@ This file is the core policy brain; it does NOT perform any IO itself.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Dict, Iterable, List, Optional, Set
@@ -208,6 +209,7 @@ class SecurityEngine:
     """
 
     _shared_instance: Optional["SecurityEngine"] = None
+    _shared_lock = threading.Lock()
 
     def __init__(self, config: Optional[SecurityEngineConfig] = None) -> None:
         self.config = config or _load_engine_config_from_config_module()
@@ -221,9 +223,10 @@ class SecurityEngine:
 
         Safe to call from anywhere. Does not perform IO.
         """
-        if cls._shared_instance is None:
-            cls._shared_instance = cls()
-        return cls._shared_instance
+        with cls._shared_lock:
+            if cls._shared_instance is None:
+                cls._shared_instance = cls()
+            return cls._shared_instance
 
     # ---------- Public API ----------
 

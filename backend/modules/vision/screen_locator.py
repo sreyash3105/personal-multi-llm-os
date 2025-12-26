@@ -96,14 +96,43 @@ class ScreenLocator:
         }
 
     def _extract_json(self, text: str) -> Optional[Dict]:
-        """Helper to find JSON blob in LLM response."""
+        """
+        Helper to find JSON blob in LLM response.
+
+        Returns parsed JSON dict if found and valid, None otherwise.
+        Logs specific errors for debugging while remaining recoverable.
+        """
+        match = None
+        json_str = None
         try:
             # Look for { ... }
             match = re.search(r"\{.*\}", text, re.DOTALL)
             if match:
-                return json.loads(match.group(0))
-        except:
-            pass
+                json_str = match.group(0)
+                return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            # Specific handling for JSON parsing errors - recoverable
+            log.warning(
+                "Failed to parse JSON from vision model response",
+                extra={
+                    "error_type": "json_decode_error",
+                    "error_msg": str(e),
+                    "text_length": len(text),
+                    "json_candidate_length": len(json_str) if json_str else 0,
+                    "json_candidate": json_str[:200] if json_str else None
+                }
+            )
+        except Exception as e:
+            # Unexpected errors - log but don't crash system
+            log.error(
+                "Unexpected error in JSON extraction",
+                extra={
+                    "error_type": type(e).__name__,
+                    "error_msg": str(e),
+                    "text_length": len(text),
+                    "json_candidate_length": len(json_str) if json_str else 0
+                }
+            )
         return None
 
 # Singleton

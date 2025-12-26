@@ -23,12 +23,16 @@ from __future__ import annotations
 
 import threading
 import time
+import atexit
+import logging
 from collections import deque
 from dataclasses import dataclass, asdict, field
 from typing import Any, Deque, Dict, List, Optional
 
 from backend.modules.telemetry.history import history_logger
 from backend.core.config import MAX_CONCURRENT_HEAVY_REQUESTS
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Job:
@@ -52,7 +56,7 @@ class Job:
 # Internal State
 # =========================
 
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()  # Reentrant lock for nested calls
 
 # Per-profile FIFO queues of job IDs
 _PROFILE_QUEUES: Dict[str, Deque[int]] = {}
@@ -69,6 +73,9 @@ _ACTIVE_HEAVY_COUNT = 0
 # Monotonic job ID generator
 _NEXT_JOB_ID = 1
 
+# Shutdown flag
+_SHUTDOWN = False
+
 
 # =========================
 # Internal Helpers
@@ -81,7 +88,10 @@ def _next_id() -> int:
     return jid
 
 def _log_queue_event(job: Job, event: str, note: Optional[str] = None) -> None:
-    """Log queue transitions to history."""
+    """Log queue transitions to history with error handling."""
+    if _SHUTDOWN:
+        return  # Skip logging during shutdown
+
     try:
         history_logger.log({
             "kind": "queue_event",
@@ -94,8 +104,8 @@ def _log_queue_event(job: Job, event: str, note: Optional[str] = None) -> None:
             "meta": dict(job.meta),
             "note": note or "",
         })
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to log queue event {event} for job {job.id}: {e}")
 
 
 # =========================
@@ -205,6 +215,7 @@ def mark_job_done(job_id: int, note: Optional[str] = None) -> Optional[Job]:
     with _LOCK:
         job = _JOBS.get(job_id)
         if not job:
+            logger.warning(f"Attempted to mark unknown job {job_id} as done")
             return None
 
         # Only release resources if it was actually running
@@ -212,8 +223,12 @@ def mark_job_done(job_id: int, note: Optional[str] = None) -> Optional[Job]:
             active_id = _ACTIVE_BY_PROFILE.get(job.profile_id)
             if active_id == job_id:
                 _ACTIVE_BY_PROFILE.pop(job.profile_id, None)
-            
+            else:
+                logger.warning(f"Job {job_id} marked done but not active for profile {job.profile_id}")
+
             if job.is_heavy:
+                if _ACTIVE_HEAVY_COUNT <= 0:
+                    logger.error(f"Heavy count underflow when marking job {job_id} done")
                 _ACTIVE_HEAVY_COUNT = max(0, _ACTIVE_HEAVY_COUNT - 1)
 
         job.state = "done"
@@ -233,14 +248,19 @@ def mark_job_failed(job_id: int, error: str) -> Optional[Job]:
     with _LOCK:
         job = _JOBS.get(job_id)
         if not job:
+            logger.warning(f"Attempted to mark unknown job {job_id} as failed")
             return None
 
         if job.state == "running":
             active_id = _ACTIVE_BY_PROFILE.get(job.profile_id)
             if active_id == job_id:
                 _ACTIVE_BY_PROFILE.pop(job.profile_id, None)
-            
+            else:
+                logger.warning(f"Job {job_id} marked failed but not active for profile {job.profile_id}")
+
             if job.is_heavy:
+                if _ACTIVE_HEAVY_COUNT <= 0:
+                    logger.error(f"Heavy count underflow when marking job {job_id} failed")
                 _ACTIVE_HEAVY_COUNT = max(0, _ACTIVE_HEAVY_COUNT - 1)
 
         job.state = "failed"
@@ -288,6 +308,38 @@ def get_job(job_id: int) -> Optional[Job]:
         return Job(**asdict(job))
 
 
+def cleanup_stale_jobs(max_age_seconds: int = 3600) -> int:
+    """
+    Clean up completed jobs older than max_age_seconds to prevent memory leaks.
+    Returns number of jobs cleaned up.
+
+    Call periodically from a maintenance thread.
+    """
+    if _SHUTDOWN:
+        return 0
+
+    cutoff_time = time.time() - max_age_seconds
+    cleaned_count = 0
+
+    with _LOCK:
+        # Find jobs to clean up (completed and old)
+        to_remove = []
+        for job_id, job in _JOBS.items():
+            if (job.state in ("done", "failed", "cancelled") and
+                job.finished_ts and job.finished_ts < cutoff_time):
+                to_remove.append(job_id)
+
+        # Remove them
+        for job_id in to_remove:
+            _JOBS.pop(job_id, None)
+            cleaned_count += 1
+
+    if cleaned_count > 0:
+        logger.info(f"Cleaned up {cleaned_count} stale jobs")
+
+    return cleaned_count
+
+
 def get_queue_snapshot(profile_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Get system state for Dashboard.
@@ -323,3 +375,60 @@ def get_queue_snapshot(profile_id: Optional[str] = None) -> Dict[str, Any]:
             }
 
         return out
+
+
+# =========================
+# Shutdown & Cleanup
+# =========================
+
+def shutdown_queue_manager() -> None:
+    """
+    Graceful shutdown: mark all running jobs as failed and log final state.
+    Called automatically on process exit.
+    """
+    global _SHUTDOWN
+    logger.info("Shutting down queue manager...")
+
+    with _LOCK:
+        _SHUTDOWN = True
+
+        # Mark all running jobs as failed
+        failed_jobs = []
+        for job_id, job in _JOBS.items():
+            if job.state == "running":
+                job.state = "failed"
+                job.error = "Shutdown: process terminated"
+                job.finished_ts = time.time()
+                failed_jobs.append(job)
+
+                # Release resources
+                active_id = _ACTIVE_BY_PROFILE.get(job.profile_id)
+                if active_id == job_id:
+                    _ACTIVE_BY_PROFILE.pop(job.profile_id, None)
+
+                if job.is_heavy:
+                    global _ACTIVE_HEAVY_COUNT
+                    _ACTIVE_HEAVY_COUNT = max(0, _ACTIVE_HEAVY_COUNT - 1)
+
+        # Log shutdown events (synchronously to avoid async issues during shutdown)
+        for job in failed_jobs:
+            try:
+                history_logger.log({
+                    "kind": "queue_event",
+                    "event": "shutdown_failed",
+                    "job_id": job.id,
+                    "profile_id": job.profile_id,
+                    "job_kind": job.kind,
+                    "is_heavy": job.is_heavy,
+                    "global_heavy_count": _ACTIVE_HEAVY_COUNT,
+                    "meta": dict(job.meta),
+                    "note": "Process shutdown",
+                })
+            except Exception:
+                pass  # Logging failures during shutdown are expected
+
+    logger.info(f"Queue manager shutdown complete. Failed {len(failed_jobs)} running jobs.")
+
+
+# Register shutdown handler
+atexit.register(shutdown_queue_manager)

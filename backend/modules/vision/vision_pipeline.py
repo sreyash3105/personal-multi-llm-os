@@ -135,16 +135,21 @@ def run_vision(
     job_profile = profile_id or "default"
     job = enqueue_job(profile_id=job_profile, kind="vision", meta={"mode": mode})
 
-    # 2. Wait for execution slot
+    # 2. Wait for execution slot (with timeout)
     acquired = try_acquire_next_job(job_profile)
     if not acquired or acquired.id != job.id:
-        while True:
+        start_wait = time.time()
+        max_wait = 300.0  # 5 minutes timeout
+        while time.time() - start_wait < max_wait:
             snapshot = get_job(job.id)
             if snapshot is None or snapshot.state in ("failed", "cancelled"):
                 return "Vision job cancelled or failed in queue."
             if snapshot.state == "running":
                 break
             time.sleep(0.1)
+        else:
+            # Timeout reached
+            return "Vision job timed out waiting in queue."
 
     try:
         # Base64 Encode

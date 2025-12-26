@@ -325,19 +325,24 @@ def consume_security_session_if_allowed(
     now_str = _now().isoformat(timespec="seconds")
 
     with _get_conn() as conn:
-        conn.isolation_level = "IMMEDIATE"  # small guard against race conditions
+        # Atomic update: increment used_count only if it hasn't reached max_uses
         cur = conn.execute(
             """
-            SELECT id, profile_id, scope, auth_level, secret,
-                   created_at, expires_at, used_count, max_uses
-            FROM security_sessions
-            WHERE profile_id = ?
-              AND scope = ?
-              AND auth_level >= ?
-              AND expires_at > ?
-              AND used_count < max_uses
-            ORDER BY expires_at ASC, id ASC
-            LIMIT 1
+            UPDATE security_sessions
+            SET used_count = used_count + 1
+            WHERE id = (
+                SELECT id
+                FROM security_sessions
+                WHERE profile_id = ?
+                  AND scope = ?
+                  AND auth_level >= ?
+                  AND expires_at > ?
+                  AND used_count < max_uses
+                ORDER BY expires_at ASC, id ASC
+                LIMIT 1
+            )
+            RETURNING id, profile_id, scope, auth_level, secret,
+                      created_at, expires_at, used_count, max_uses
             """,
             (profile_id, scope, int(required_level), now_str),
         )
@@ -345,35 +350,9 @@ def consume_security_session_if_allowed(
         if not row:
             return None
 
-        sid = row["id"]
-        used_count = int(row["used_count"]) + 1
-
-        conn.execute(
-            """
-            UPDATE security_sessions
-            SET used_count = ?
-            WHERE id = ?
-            """,
-            (used_count, sid),
-        )
         conn.commit()
 
-        # Re-read to return the updated object.
-        cur2 = conn.execute(
-            """
-            SELECT id, profile_id, scope, auth_level, secret,
-                   created_at, expires_at, used_count, max_uses
-            FROM security_sessions
-            WHERE id = ?
-            """,
-            (sid,),
-        )
-        updated = cur2.fetchone()
-
-    if not updated:
-        return None
-
-    return _row_to_dict(updated)
+    return _row_to_dict(row)
 
 
 def cleanup_expired_sessions(max_rows: int = 500) -> int:

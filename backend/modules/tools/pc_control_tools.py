@@ -13,7 +13,52 @@ from __future__ import annotations
 import time
 import math
 import random
+import logging
 from typing import Dict, Any, Tuple, Optional
+
+from backend.core.feature_registry import register_feature, is_feature_available
+
+logger = logging.getLogger(__name__)
+
+# Attempt to import optional dependencies and register capabilities
+try:
+    import pyautogui
+    register_feature(
+        "pyautogui",
+        True,
+        "Mouse and keyboard automation",
+        install_hint="pip install pyautogui",
+        fallback_behavior="mock mode (no real input)"
+    )
+except ImportError:
+    pyautogui = None
+    register_feature(
+        "pyautogui",
+        False,
+        "Mouse and keyboard automation",
+        install_hint="pip install pyautogui",
+        fallback_behavior="mock mode (no real input)"
+    )
+
+try:
+    from pynput.keyboard import Controller as KeyboardController, Key
+    register_feature(
+        "pynput",
+        True,
+        "Advanced keyboard control",
+        install_hint="pip install pynput",
+        fallback_behavior="basic keyboard simulation"
+    )
+except ImportError:
+    KeyboardController = None
+    Key = None
+    register_feature(
+        "pynput",
+        False,
+        "Advanced keyboard control",
+        install_hint="pip install pynput",
+        fallback_behavior="basic keyboard simulation"
+    )
 
 # ---- CONFIG / HYPERPARAMS ----
 TF_MIN = 0.35
@@ -29,38 +74,42 @@ DEFAULT_ELLIPSE_CURVATURE = 0.18
 SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1080
 
-# Execution mode
-_REAL_MODE = True
-
-# Abort token (set True to stop current movement)
-_abort_flag = False
-
-# RNG seed for reproducibility
-_RNG_SEED: Optional[int] = None
-
-# Import optional libs at runtime if real mode enabled
-_pyautogui = None
-_pynput = None
+# Global state
+_REAL_MODE = False  # Safe default: disabled
 
 # -------------------------------
 
 def set_real_mode(enable: bool):
-    """Enable/disable real input using pyautogui/pynput. Safe default: False."""
-    global _REAL_MODE, _pyautogui, _pynput
-    _REAL_MODE = bool(enable)
-    if _REAL_MODE:
-        try:
-            import pyautogui as _pg
-            from pynput.keyboard import Controller as _KeyboardController, Key as _Key
-            _pyautogui = _pg
-            _pynput = (_KeyboardController(), _Key)
-            # Optional: disable pyautogui failsafe if needed
-            _pyautogui.FAILSAFE = False
-        except Exception as e:
-            _REAL_MODE = False
-            _pyautogui = None
-            _pynput = None
-            raise RuntimeError("Failed to enable real mode. Install pyautogui and pynput.") from e
+    """
+    Enable/disable real input using pyautogui/pynput.
+    Checks capability flags and provides clear error messages.
+    """
+    global _REAL_MODE
+
+    if not enable:
+        _REAL_MODE = False
+        logger.info("PC control real mode disabled")
+        return
+
+    # Check capabilities using centralized registry
+    if not is_feature_available("pyautogui"):
+        raise RuntimeError(
+            "Cannot enable real mode: pyautogui not available. "
+            "PC control will use mock mode only."
+        )
+
+    if not is_feature_available("pynput"):
+        raise RuntimeError(
+            "Cannot enable real mode: pynput not available. "
+            "Keyboard control will use basic simulation only."
+        )
+
+    _REAL_MODE = True
+    logger.info("PC control real mode enabled")
+
+    # Configure pyautogui
+    if pyautogui:
+        pyautogui.FAILSAFE = False
 
 def set_screen_bounds(width: int, height: int):
     """Set screen bounds for safety/clamping (pixels)."""
@@ -134,22 +183,24 @@ def _elliptical_point(start: Tuple[float, float], target: Tuple[float, float],
 
 def _move_cursor_to(x: int, y: int):
     """Move cursor to (x,y) immediately (real or mock)."""
-    if _REAL_MODE and _pyautogui is not None:
-        _pyautogui.moveTo(x, y, duration=0)  # immediate move; BCMM controls timing
+    if _REAL_MODE and pyautogui is not None:
+        pyautogui.moveTo(x, y, duration=0)  # immediate move; BCMM controls timing
     else:
         # Mock: no-op (we rely on timing to simulate motion)
         pass
 
 def _click_at(x: int, y: int, button: str = "left"):
-    if _REAL_MODE and _pyautogui is not None:
-        _pyautogui.click(x=x, y=y, button=button)
+    """Click at (x,y) with specified button."""
+    if _REAL_MODE and pyautogui is not None:
+        pyautogui.click(x=x, y=y, button=button)
     else:
         # mock click: no-op
         pass
 
 def _press_key(key: str, modifier: Optional[str] = None):
-    if _REAL_MODE and _pynput is not None:
-        keyboard_ctrl, Key = _pynput
+    if _REAL_MODE and KeyboardController is not None and Key is not None:
+        keyboard_ctrl = KeyboardController()
+        mod = None
         if modifier:
             mod = getattr(Key, modifier, None)
             if mod:
@@ -256,8 +307,8 @@ def tool_mouse_click(args: Dict[str, Any]) -> Dict[str, Any]:
     y = args.get("y")
     
     # In a real environment, you should get the current position dynamically if start_x/y aren't provided
-    start_x = args.get("start_x", _pyautogui.position()[0] if _REAL_MODE and _pyautogui else 500)
-    start_y = args.get("start_y", _pyautogui.position()[1] if _REAL_MODE and _pyautogui else 500)
+    start_x = args.get("start_x", pyautogui.position()[0] if _REAL_MODE and pyautogui else 500)
+    start_y = args.get("start_y", pyautogui.position()[1] if _REAL_MODE and pyautogui else 500)
     
     if x is None or y is None:
         return {"ok": False, "message": "Missing x or y"}

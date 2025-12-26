@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from typing import Any, Dict, List, Optional
 
 from backend.core.config import (
@@ -104,13 +105,10 @@ DEFAULT_PLANNER_MODEL = CHAT_MODEL_NAME  # Use chat model for planning
 
 
 class Planner:
-    """
-    Centralized reasoning brain for the Local AI OS.
-
-    Singleton pattern - use Planner.shared() to get instance.
-    """
+    """Centralized planner for the Local AI OS."""
 
     _shared_instance: Optional["Planner"] = None
+    _shared_lock = threading.Lock()
 
     def __init__(self):
         self.model_name = DEFAULT_PLANNER_MODEL
@@ -118,9 +116,10 @@ class Planner:
     @classmethod
     def shared(cls) -> "Planner":
         """Get shared Planner instance."""
-        if cls._shared_instance is None:
-            cls._shared_instance = cls()
-        return cls._shared_instance
+        with cls._shared_lock:
+            if cls._shared_instance is None:
+                cls._shared_instance = cls()
+            return cls._shared_instance
 
     def plan_request(self, user_input: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """

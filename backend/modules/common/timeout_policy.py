@@ -36,8 +36,18 @@ IMPORTANT:
 """
 
 import time
+import atexit
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Callable, Optional, TypeVar
+
+# Module-level thread pool to avoid creating executors per call
+_TIMEOUT_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="timeout")
+
+def _shutdown_timeout_executor():
+    """Shutdown the timeout executor on module exit."""
+    _TIMEOUT_EXECUTOR.shutdown(wait=True)
+
+atexit.register(_shutdown_timeout_executor)
 
 T = TypeVar("T")
 
@@ -136,9 +146,8 @@ def run_with_retries(
 
         try:
             if timeout_s and timeout_s > 0:
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(fn)
-                    result = future.result(timeout=timeout_s)
+                future = _TIMEOUT_EXECUTOR.submit(fn)
+                result = future.result(timeout=timeout_s)
             else:
                 # No timeout requested: run fn directly.
                 result = fn()

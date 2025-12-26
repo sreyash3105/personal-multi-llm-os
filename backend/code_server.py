@@ -195,7 +195,9 @@ def generate_code(req: CodeRequest):
                 reviewer_output=final_output or "",
             )
         except Exception as e:
-            judge_result = {"confidence_score": None, "conflict_score": None, "judgement_summary": f"Judge failed: {e}", "raw_response": "", "parse_error": str(e)}
+            import logging
+            logging.getLogger(__name__).error(f"Judge evaluation failed: {e}")
+            judge_result = {"confidence_score": 0.0, "conflict_score": 0.0, "judgement_summary": f"Judge failed: {e}", "judge_error": True}
 
     # -------- Mode: review only --------
     elif mode == "review_only":

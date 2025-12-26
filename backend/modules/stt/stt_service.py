@@ -36,11 +36,27 @@ from backend.modules.jobs.queue_manager import (
 
 from backend.core import config  # your project config
 
+from backend.core.feature_registry import register_feature
+
 # Safe imports for optional modules
 try:
     from faster_whisper import WhisperModel
+    register_feature(
+        "faster_whisper",
+        True,
+        "Optimized STT transcription",
+        install_hint="pip install faster-whisper",
+        fallback_behavior="basic transcription (slower)"
+    )
 except ImportError:
     WhisperModel = None
+    register_feature(
+        "faster_whisper",
+        False,
+        "Optimized STT transcription",
+        install_hint="pip install faster-whisper",
+        fallback_behavior="basic transcription (slower)"
+    )
 
 try:
     from backend.modules.telemetry import history_logger

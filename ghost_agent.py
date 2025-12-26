@@ -10,6 +10,7 @@ import tkinter as tk
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
+from concurrent.futures import ThreadPoolExecutor
 from pynput import keyboard
 from pathlib import Path
 
@@ -55,12 +56,16 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 log = logging.getLogger("GhostAgent")
 
 # --- Global State ---
-overlay = None
 is_listening = False
-audio_buffer = []
+_abort_flag = False
 current_keys = set()
+
+# Thread pool for voice command processing (bounded to prevent explosion)
+VOICE_THREAD_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="voice_cmd")
 server_proc = None
 dash_proc = None
+stream = None
+listener = None
 
 # --- UI Class ---
 class OverlayWindow:
@@ -238,7 +243,7 @@ def on_release(key):
     # If keys released, stop listening and process
     if is_listening and not all(k in current_keys for k in HOTKEY_COMBINATION):
         is_listening = False
-        threading.Thread(target=process_voice_command).start()
+        VOICE_THREAD_POOL.submit(process_voice_command)
 
 # --- Bootloader Logic ---
 def boot_system_services():
@@ -281,12 +286,38 @@ def global_cleanup():
     if server_proc:
         print("    Killing Brain...")
         server_proc.terminate()
+        try:
+            server_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server_proc.kill()
+            server_proc.wait()
     if dash_proc:
         print("    Killing Dashboard...")
         dash_proc.terminate()
+        try:
+            dash_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            dash_proc.kill()
+            dash_proc.wait()
+
+    # Shutdown voice command thread pool
+    print("    Shutting down voice threads...")
+    VOICE_THREAD_POOL.shutdown(wait=True)
+
+    # Stop audio stream
+    if stream:
+        print("    Stopping audio stream...")
+        stream.stop()
+        stream.close()
+
+    # Stop keyboard listener
+    if listener:
+        print("    Stopping keyboard listener...")
+        listener.stop()
 
 # --- Main Entry Point ---
 if __name__ == "__main__":
+    global stream, listener
     # A. Boot Backend Services
     server_proc, dash_proc = boot_system_services()
 
@@ -294,13 +325,14 @@ if __name__ == "__main__":
     print("\n✅ GHOST AGENT ONLINE")
     print(f"   Target: {os.getcwd()}")
     print("   Action: Hold [Ctrl + Alt + Space] to speak.")
-    
+
     # B. Start Audio Stream
     try:
         stream = sd.InputStream(callback=audio_callback, channels=1, samplerate=SAMPLE_RATE)
         stream.start()
     except Exception as e:
         print(f"CRITICAL: Audio device failed. {e}")
+        stream = None
 
     # C. Start Keyboard Listener
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)

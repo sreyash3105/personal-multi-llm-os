@@ -271,7 +271,9 @@ def run_chat_smart(
 
     acquired = try_acquire_next_job(profile_id)
     if not acquired or acquired.id != job.id:
-        while True:
+        start_wait = time.time()
+        max_wait = 300.0  # 5 minutes timeout
+        while time.time() - start_wait < max_wait:
             snapshot = get_job(job.id)
             if snapshot is None:
                 answer_text = "(This smart chat job was cancelled or lost in the queue.)"
@@ -283,6 +285,11 @@ def run_chat_smart(
                 answer_text = "(This smart chat job was already finished in another worker.)"
                 answer_error = "queue_job_already_finished"
                 break
+            time.sleep(0.1)
+        else:
+            # Timeout reached
+            answer_text = "(This smart chat job timed out waiting in queue.)"
+            answer_error = "queue_timeout"
             time.sleep(0.05)
 
     if answer_error:

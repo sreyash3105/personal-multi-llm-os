@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import time
+import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, List, Set
+
+logger = logging.getLogger(__name__)
 
 from backend.core.config import (
     TOOLS_RUNTIME_ENABLED,
@@ -185,13 +188,14 @@ def _compute_security_decision(
             "policy_name": decision.policy_name,
             "meta": decision.meta,
         }
-    except Exception:
-        # Fail-safe: allow but still attach something minimal.
+    except Exception as e:
+        # Security failure: log and BLOCK to fail closed
+        logger.error(f"SecurityEngine evaluation failed: {e}")
         return {
-            "auth_level": int(SecurityAuthLevel.ALLOW),
-            "auth_label": SecurityAuthLevel.ALLOW.name,
-            "reason": "SecurityEngine evaluation failed; defaulting to ALLOW.",
-            "risk_score": float(risk_info.get("risk_level") or 1.0),
+            "auth_level": int(SecurityAuthLevel.BLOCK),
+            "auth_label": SecurityAuthLevel.BLOCK.name,
+            "reason": f"SecurityEngine evaluation failed: {e}; defaulting to BLOCK.",
+            "risk_score": float(risk_info.get("risk_level") or 10.0),  # High risk
             "tags": ["security_engine_error"],
             "policy_name": "security_engine_fallback",
             "meta": {},

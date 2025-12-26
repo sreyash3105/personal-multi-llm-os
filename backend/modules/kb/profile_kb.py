@@ -14,8 +14,6 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-from backend.modules.kb.vector_store import get_embedding, cosine_similarity
-
 # DB file lives under the project root data/ folder
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
@@ -23,6 +21,35 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = DATA_DIR / "profile_kb.sqlite3"
 logger = logging.getLogger(__name__)
+
+from backend.core.feature_registry import register_feature
+
+# Safe import of vector store with capability detection
+try:
+    from backend.modules.kb.vector_store import get_embedding, cosine_similarity
+    register_feature(
+        "vector_store",
+        True,
+        "Semantic vector search for knowledge base",
+        install_hint="pip install requests numpy",
+        fallback_behavior="keyword-only search"
+    )
+except ImportError as e:
+    register_feature(
+        "vector_store",
+        False,
+        "Semantic vector search for knowledge base",
+        install_hint="pip install requests numpy",
+        fallback_behavior="keyword-only search"
+    )
+    # Provide fallback implementations
+    def get_embedding(text: str):
+        logger.debug("get_embedding called but vector_store unavailable")
+        return None
+
+    def cosine_similarity(a, b):
+        logger.debug("cosine_similarity called but vector_store unavailable")
+        return 0.0
 
 def _get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
