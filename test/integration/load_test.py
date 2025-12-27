@@ -9,9 +9,13 @@ import sys
 import os
 import time
 import threading
+from pathlib import Path
 
 # Add backend to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'backend'))
+project_root = Path(__file__).resolve().parent.parent.parent
+backend_path = str(project_root)
+if backend_path not in sys.path:
+    sys.path.insert(0, backend_path)
 
 def load_jobs():
     """Load test jobs."""
@@ -32,7 +36,7 @@ def load_jobs():
 
 def load_confirmations():
     """Load test confirmations."""
-    from backend.modules.router.confirmation_router import create_confirmation_request
+    from backend.core.confirmation import create_confirmation_request
 
     for i in range(5):
         conf = create_confirmation_request(f'Load test {i}', {'test': i}, {'level': 'low'}, ttl_seconds=10)

@@ -14,15 +14,15 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-# Context variables for request correlation
-request_id: ContextVar[Optional[str]] = ContextVar('request_id', default=None)
+# Context variables for execution correlation
+execution_id: ContextVar[Optional[str]] = ContextVar('execution_id', default=None)
 session_id: ContextVar[Optional[str]] = ContextVar('session_id', default=None)
 
-class RequestIdFilter(logging.Filter):
-    """Add request ID to all log records."""
+class ExecutionIdFilter(logging.Filter):
+    """Add execution ID to all log records."""
 
     def filter(self, record):
-        record.request_id = request_id.get() or "no-request"
+        record.execution_id = execution_id.get() or "no-execution"
         record.session_id = session_id.get() or "no-session"
         return True
 
@@ -42,7 +42,7 @@ class ComponentAdapter(logging.LoggerAdapter):
 
 def setup_logging(level: str = "INFO", log_file: Optional[Path] = None) -> None:
     """
-    Configure logging for the entire application.
+    Configure logging for entire application.
 
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
@@ -54,13 +54,13 @@ def setup_logging(level: str = "INFO", log_file: Optional[Path] = None) -> None:
         'version': 1,
         'disable_existing_loggers': False,
         'filters': {
-            'request_id': {
-                '()': RequestIdFilter,
+            'execution_id': {
+                '()': ExecutionIdFilter,
             },
         },
         'formatters': {
             'detailed': {
-                'format': '%(asctime)s [%(levelname)s] %(component)s %(name)s %(request_id)s - %(message)s',
+                'format': '%(asctime)s [%(levelname)s] %(component)s %(name)s %(execution_id)s - %(message)s',
                 'datefmt': '%Y-%m-%d %H:%M:%S'
             },
             'simple': {
@@ -73,7 +73,7 @@ def setup_logging(level: str = "INFO", log_file: Optional[Path] = None) -> None:
                 'level': level,
                 'formatter': 'simple',
                 'stream': sys.stdout,
-                'filters': ['request_id']
+                'filters': ['execution_id']
             }
         },
         'root': {
@@ -82,7 +82,7 @@ def setup_logging(level: str = "INFO", log_file: Optional[Path] = None) -> None:
         },
         'loggers': {
             # Specific loggers for different components
-            'ai_os.api': {'level': level, 'propagate': True},
+            'ai_os.runner': {'level': level, 'propagate': True},
             'ai_os.models': {'level': level, 'propagate': True},
             'ai_os.queue': {'level': level, 'propagate': True},
             'ai_os.storage': {'level': level, 'propagate': True},
@@ -98,7 +98,7 @@ def setup_logging(level: str = "INFO", log_file: Optional[Path] = None) -> None:
             'level': level,
             'formatter': 'detailed',
             'filename': str(log_file),
-            'filters': ['request_id']
+            'filters': ['execution_id']
         }
         config['root']['handlers'].append('file')
 
@@ -109,7 +109,7 @@ def get_logger(component: str) -> ComponentAdapter:
     Get a logger for a specific component.
 
     Args:
-        component: Component name (e.g., 'api', 'models.llm', 'queue.manager')
+        component: Component name (e.g., 'runner', 'models.llm', 'queue.manager')
 
     Returns:
         Logger adapter with component context
@@ -117,30 +117,30 @@ def get_logger(component: str) -> ComponentAdapter:
     logger = logging.getLogger(f'ai_os.{component}')
     return ComponentAdapter(logger, component)
 
-def set_request_context(request_id_val: Optional[str] = None,
-                       session_id_val: Optional[str] = None) -> None:
-    """Set request and session context for logging."""
-    if request_id_val:
-        request_id.set(request_id_val)
+def set_execution_context(execution_id_val: Optional[str] = None,
+                         session_id_val: Optional[str] = None) -> None:
+    """Set execution and session context for logging."""
+    if execution_id_val:
+        execution_id.set(execution_id_val)
     if session_id_val:
         session_id.set(session_id_val)
 
-def generate_request_id() -> str:
-    """Generate a new request ID."""
+def generate_execution_id() -> str:
+    """Generate a new execution ID."""
     return str(uuid.uuid4())[:8]
 
 # Convenience functions for common logging patterns
-def log_api_request(component: str, method: str, endpoint: str,
-                   user_id: Optional[str] = None, **kwargs) -> ComponentAdapter:
-    """Log API request with structured context."""
-    logger = get_logger(f'api.{component}')
-    logger.info(f"API {method} {endpoint}",
-               extra={'user_id': user_id or 'anonymous', **kwargs})
+def log_execution(component: str, operation: str,
+                 context_id: Optional[str] = None, **kwargs) -> ComponentAdapter:
+    """Log execution with structured context."""
+    logger = get_logger(f'runner.{component}')
+    logger.info(f"Execution {operation}",
+               extra={'execution_id': context_id or 'no-exec', **kwargs})
     return logger
 
 def log_model_inference(model_name: str, operation: str,
-                       input_tokens: Optional[int] = None,
-                       **kwargs) -> ComponentAdapter:
+                   input_tokens: Optional[int] = None,
+                   **kwargs) -> ComponentAdapter:
     """Log model inference with performance context."""
     logger = get_logger(f'models.{model_name}')
     logger.info(f"Model {operation}",
@@ -148,7 +148,7 @@ def log_model_inference(model_name: str, operation: str,
     return logger
 
 def log_queue_operation(operation: str, job_id: Optional[str] = None,
-                       profile_id: Optional[str] = None, **kwargs) -> ComponentAdapter:
+                   profile_id: Optional[str] = None, **kwargs) -> ComponentAdapter:
     """Log queue operations with job context."""
     logger = get_logger('queue.manager')
     logger.info(f"Queue {operation}",
@@ -156,12 +156,12 @@ def log_queue_operation(operation: str, job_id: Optional[str] = None,
     return logger
 
 def log_security_event(event_type: str, severity: str = "INFO",
-                      user_id: Optional[str] = None, **kwargs) -> ComponentAdapter:
+                      profile_id: Optional[str] = None, **kwargs) -> ComponentAdapter:
     """Log security events with appropriate severity."""
     logger = get_logger('security.events')
     log_method = getattr(logger, severity.lower(), logger.info)
     log_method(f"Security {event_type}",
-              extra={'user_id': user_id or 'system', **kwargs})
+               extra={'profile_id': profile_id or 'system', **kwargs})
     return logger
 
 # Performance timing utilities
@@ -185,8 +185,8 @@ class PerformanceTimer:
         if exc_type:
             self.logger.error(f"Failed {self.operation} in {duration:.3f}s",
                             extra={'operation': self.operation, 'duration': duration,
-                                  'error': str(exc_val), **self.context})
+                                   'error': str(exc_val), **self.context})
         else:
             self.logger.info(f"Completed {self.operation} in {duration:.3f}s",
                            extra={'operation': self.operation, 'duration': duration,
-                                 **self.context})
+                                  **self.context})

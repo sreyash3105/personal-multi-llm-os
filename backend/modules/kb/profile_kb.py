@@ -7,11 +7,11 @@ UPGRADES:
 - Uses 'vector_store.py' to drive the 'nomic-embed-text' model.
 """
 
-import sqlite3
+from datetime import datetime
 import json
 import logging
 from pathlib import Path
-from datetime import datetime
+import sqlite3
 from typing import List, Dict, Any, Optional
 
 # DB file lives under the project root data/ folder

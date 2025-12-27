@@ -72,7 +72,7 @@ class ScreenLocator:
         # Phase B: Add confidence validation
         try:
             from backend.modules.perception.vision_confidence import validate_vision_result
-            from backend.modules.router.confirmation_router import create_confirmation_request
+            from backend.core.confirmation import create_confirmation_request
 
             vision_result = {"response": vision_response}
             validated_result = validate_vision_result(vision_result, "location")

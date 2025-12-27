@@ -1,0 +1,9 @@
+# MEK-4: Composition Without Power - Dependencies
+
+# Test framework
+pytest>=8.0.0
+
+# Note: MEK-4 depends on:
+# - mek0.kernel (MEK-0)
+# - mek2.authority_guard (MEK-2)
+# - mek3.snapshot_guard (MEK-3)

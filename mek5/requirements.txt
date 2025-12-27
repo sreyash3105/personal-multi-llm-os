@@ -1,0 +1,10 @@
+# MEK-5: Failure as First-Class Output - Dependencies
+
+# Test framework
+pytest>=8.0.0
+
+# Note: MEK-5 depends on:
+# - mek0.kernel (MEK-0)
+# - mek2.authority_guard (MEK-2)
+# - mek3.snapshot_guard (MEK-3)
+# - mek4.composition_guard (MEK-4)

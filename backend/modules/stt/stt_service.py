@@ -272,7 +272,7 @@ class STTService:
             # Phase B: Add confidence validation
             try:
                 from backend.modules.perception.stt_confidence import validate_stt_result
-                from backend.modules.router.confirmation_router import create_confirmation_request
+                from backend.core.confirmation import create_confirmation_request
 
                 out = validate_stt_result(out)
                 confidence_meta = out.get("confidence_metadata", {})

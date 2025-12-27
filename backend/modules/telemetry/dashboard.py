@@ -1,10 +1,9 @@
 # backend/modules/telemetry/dashboard.py
 """
 Advanced Dashboard.
-Visualizes the full AI Chain of Thought: Planner -> Worker -> Risk.
+Visualizes full AI Chain of Thought: Planner -> Worker -> Risk.
 """
 from __future__ import annotations
-from fastapi import APIRouter
 from html import escape
 import json
 from typing import Any
@@ -172,7 +171,5 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
-security_router = APIRouter()
-@security_router.get("/api/dashboard/security_sessions")
 def get_sessions(profile_id: str):
     return get_active_sessions_for_profile(profile_id)

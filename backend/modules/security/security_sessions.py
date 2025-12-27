@@ -58,6 +58,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from backend.modules.security.permission_scopes import build_tool_scope
+
 # DB location (separate from chat/history DBs)
 # Always store DB in <project_root>/data/ regardless of this file's location.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

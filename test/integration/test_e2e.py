@@ -11,9 +11,13 @@ Run with: python test/integration/test_e2e.py
 import time
 import sys
 import os
+from pathlib import Path
 
 # Add backend to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'backend'))
+project_root = Path(__file__).resolve().parent.parent.parent
+backend_path = str(project_root)
+if backend_path not in sys.path:
+    sys.path.insert(0, backend_path)
 
 def test_job_lifecycle():
     """Test job enqueue → run → cleanup."""
@@ -43,7 +47,7 @@ def test_job_lifecycle():
 def test_confirmation_flow():
     """Test confirmation create → submit → expire."""
     print("Testing confirmation flow...")
-    from backend.modules.router.confirmation_router import create_confirmation_request, submit_confirmation, get_active_confirmations
+    from backend.core.confirmation import create_confirmation_request, submit_confirmation, get_active_confirmations
 
     # Create
     conf = create_confirmation_request('E2E test', {'action': 'test'}, {'level': 'medium'}, ttl_seconds=5)
@@ -57,8 +61,7 @@ def test_confirmation_flow():
     print("Confirmation is active")
 
     # Submit
-    from backend.modules.router.confirmation_router import ConfirmationSubmit
-    result = submit_confirmation(ConfirmationSubmit(token=token, decision='confirm'))
+    result = submit_confirmation(token=token, decision='confirm')
     assert result['status'] == 'confirmed', "Confirmation submit failed"
     print("Confirmation submitted")
 

@@ -111,6 +111,9 @@ CONFIRMATION_CLEANUP_INTERVAL_SECONDS = 30  # Cleanup every 30 seconds for bette
 # ---- Phase C: Permission system ----
 PERMISSION_SYSTEM_ENABLED = True  # Dry-run mode: logs permission decisions but does not enforce
 
+# ---- Phase C2: Permission Enforcer Shell ----
+PERMISSION_ENFORCER_ENABLED = False  # Must be False for STEP 1 (no enforcement)
+
 # ---- HARDNING BASE · Phase 2 — Concurrency & timeouts ----
 # Maximum number of heavy operations (LLM, Vision, STT) that can run at the same time.
 MAX_CONCURRENT_HEAVY_REQUESTS = 2

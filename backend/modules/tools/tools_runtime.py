@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import time
-import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
+import logging
+import time
 from typing import Any, Callable, Dict, Optional, List, Set
 
 logger = logging.getLogger(__name__)
@@ -16,11 +16,14 @@ from backend.core.config import (
     SECURITY_MIN_ENFORCED_LEVEL,
     PERMISSION_SYSTEM_ENABLED,
 )
-from backend.modules.telemetry.history import history_logger
-from backend.modules.telemetry.risk import assess_risk
 from backend.modules.common.io_guards import clamp_tool_output  # shared output clamp for logging
+# Phase C2: Permission Enforcer Shell (observability only)
+from backend.modules.security.permission_enforcer import permission_chokepoint
+from backend.modules.security.permission_scopes import build_tool_scope
 from backend.modules.security.security_engine import SecurityEngine, SecurityAuthLevel
 from backend.modules.security.security_sessions import consume_security_session_if_allowed
+from backend.modules.telemetry.history import history_logger
+from backend.modules.telemetry.risk import assess_risk
 
 # Phase C: Permission system hooks (feature-flagged OFF)
 if PERMISSION_SYSTEM_ENABLED:
@@ -366,10 +369,71 @@ def execute_tool(
     except Exception:
         auth_level = 1
 
+    profile_id = ""
+    if isinstance(context, dict):
+        profile_id = (context.get("profile_id") or "").strip()
+
+    # Phase C2: Permission Enforcer Shell (observability only)
+    permission_evaluation = None
+    decision = None
+    try:
+        decision = permission_chokepoint(
+            profile_id=profile_id,
+            scope=build_tool_scope(name),
+            auth_level=auth_level,
+            context=context,
+        )
+        permission_evaluation = {
+            "mode": SECURITY_ENFORCEMENT_MODE,
+            "decision": decision.to_dict(),
+        }
+    except Exception:
+        pass  # Best-effort, ignore failures
+
+    # STEP 7: Soft Enforcement Check
+    if decision and decision.outcome == "blocked":
+        error_info = decision.meta.get("error", {})
+        record = {
+            "ok": False,
+            "tool": name,
+            "result": None,
+            "error": error_info.get("reason", "approval_required"),
+            "approval_required": True,
+            "scope": error_info.get("scope"),
+            "auth_level": error_info.get("auth_level"),
+            "required_action": error_info.get("required_action"),
+            "meta": {
+                "args": args,
+                "context_provided": context is not None,
+            },
+            "risk": risk_info,
+            "security": security_info,
+            "requires_approval": True,
+            "permission_evaluation": permission_evaluation,
+        }
+        # Log blocked execution
+        if TOOLS_RUNTIME_LOGGING:
+            try:
+                logged_tool_record = dict(record)
+                history_logger.log(
+                    {
+                        "mode": "tool_execution",
+                        "original_prompt": None,
+                        "normalized_prompt": None,
+                        "coder_output": None,
+                        "reviewer_output": None,
+                        "final_output": None,
+                        "escalated": False,
+                        "escalation_reason": "",
+                        "judge": None,
+                        "tool_record": logged_tool_record,
+                    }
+                )
+            except Exception:
+                pass
+        return record
+
     if SECURITY_ENFORCEMENT_MODE in ("soft", "strict") and auth_level >= SECURITY_MIN_ENFORCED_LEVEL:
-        profile_id = ""
-        if isinstance(context, dict):
-            profile_id = (context.get("profile_id") or "").strip()
 
         session_ok = False
         if SECURITY_ENFORCEMENT_MODE == "soft" and profile_id:
@@ -377,7 +441,7 @@ def execute_tool(
                 # Scope: specific tool; future: support "tool:*"
                 session_ok = consume_security_session_if_allowed(
                     profile_id=profile_id,
-                    scope=f"tool:{name}",
+                    scope=build_tool_scope(name),
                     required_level=auth_level,
                 )
             except Exception:
@@ -426,6 +490,23 @@ def execute_tool(
 
             return record
 
+    # Phase C2: Permission Enforcer Shell (observability only)
+    permission_evaluation = None
+    try:
+        enforcer = PermissionEnforcer.shared()
+        decision = enforcer.evaluate(
+            profile_id=profile_id,
+            scope=f"tool:{name}",
+            auth_level=auth_level,
+            context=context,
+        )
+        permission_evaluation = {
+            "mode": SECURITY_ENFORCEMENT_MODE,
+            "decision": decision.to_dict(),
+        }
+    except Exception:
+        pass  # Best-effort, ignore failures
+
     # ----- Actual tool execution (if not blocked) -----
     result: Any = None
     error: Optional[str] = None
@@ -460,6 +541,7 @@ def execute_tool(
         "risk": risk_info,
         "security": security_info,
         "requires_approval": requires_approval,
+        "permission_evaluation": permission_evaluation,
     }
 
     # History / dashboard logging (bounded representation)
@@ -596,7 +678,7 @@ def security_gate_for_tool(
         { "ok": False, "reason": "..."}       → block
     """
 
-    scope = f"tool:{tool_name}"
+    scope = build_tool_scope(tool_name)
 
     # wildcard approval covers all tools (approved once for the profile)
     if sec_has_tool_wildcard(profile_id=profile_id, required_level=required_level):

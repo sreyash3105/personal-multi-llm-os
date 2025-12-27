@@ -1,0 +1,11 @@
+# MEK-6: Evidence Export Dependencies
+
+# Test framework
+pytest>=8.0.0
+
+# Note: MEK-6 depends on:
+# - mek0.kernel (MEK-0)
+# - mek2.authority_guard (MEK-2)
+# - mek3.snapshot_guard (MEK-3)
+# - mek4.composition_guard (MEK-4)
+# - mek5.failure_guard (MEK-5)

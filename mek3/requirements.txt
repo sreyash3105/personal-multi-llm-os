@@ -1,0 +1,4 @@
+# MEK-3: Execution Snapshot & Reality-Binding
+# Authority-as-Law / TOCTOU Immunity / Anti-Rationalization
+
+pytest>=8.0.0
