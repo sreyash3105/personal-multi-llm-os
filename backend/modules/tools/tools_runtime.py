@@ -14,12 +14,19 @@ from backend.core.config import (
     TOOLS_MAX_RUNTIME_SECONDS,
     SECURITY_ENFORCEMENT_MODE,
     SECURITY_MIN_ENFORCED_LEVEL,
+    PERMISSION_SYSTEM_ENABLED,
 )
 from backend.modules.telemetry.history import history_logger
 from backend.modules.telemetry.risk import assess_risk
 from backend.modules.common.io_guards import clamp_tool_output  # shared output clamp for logging
 from backend.modules.security.security_engine import SecurityEngine, SecurityAuthLevel
 from backend.modules.security.security_sessions import consume_security_session_if_allowed
+
+# Phase C: Permission system hooks (feature-flagged OFF)
+if PERMISSION_SYSTEM_ENABLED:
+    from backend.modules.security.permission_manager import check_permission_for_tool_execution
+else:
+    check_permission_for_tool_execution = None
 
 # 🟢 NEW IMPORTS: Import tool registries from specific tool files
 # Note: file_tools.py must be importable (and implicitly registers file/kb tools)
@@ -264,6 +271,19 @@ def execute_tool(
           error="security_approval_required" and requires_approval=True.
         * "strict": return error="security_blocked" with no session bypass.
     """
+    name = (name or "").strip()
+    if not name:
+        return {
+            "ok": False,
+            "tool": name,
+            "result": None,
+            "error": "Tool name cannot be empty",
+            "meta": {"args": args or {}, "context_provided": context is not None},
+            "risk": {"risk_level": 1, "tags": [], "reasons": "Invalid tool name"},
+            "security": {"auth_level": 1, "auth_label": "ALLOW", "reason": "Invalid tool name", "risk_score": 1.0, "tags": [], "policy_name": "invalid_tool", "meta": {}},
+            "requires_approval": False,
+        }
+
     args = args or {}
 
     # ----- Risk tagging (logging only, must never raise) -----
@@ -323,6 +343,22 @@ def execute_tool(
             "requires_approval": requires_approval,
         }
         return record
+
+    # ----- Phase C: Permission system hooks (feature-flagged OFF) -----
+    permission_info = None
+    if PERMISSION_SYSTEM_ENABLED and check_permission_for_tool_execution:
+        try:
+            # Use the auth_level from security_info as required_auth_level
+            required_auth_level = int(security_info.get("auth_level", 1))
+            permission_info = check_permission_for_tool_execution(
+                profile_id="",  # profile_id defined later, use empty for now
+                tool_name=name,
+                scope=f"tool:{name}",
+                required_auth_level=required_auth_level,
+            )
+            # Future: use permission_info for enforcement
+        except Exception as e:
+            logger.warning(f"Permission check failed: {e}")
 
     # ----- Optional enforcement (config-controlled) -----
     try:

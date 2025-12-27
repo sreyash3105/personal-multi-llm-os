@@ -338,6 +338,7 @@ if __name__ == "__main__":
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
 
+if __name__ == "__main__":
     # D. Start UI (Blocking)
     # This keeps the script running indefinitely
     try:

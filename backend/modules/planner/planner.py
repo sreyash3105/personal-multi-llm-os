@@ -53,6 +53,7 @@ from backend.core.config import (
 )
 from backend.modules.code.pipeline import call_ollama
 from backend.modules.telemetry.history import history_logger
+from backend.modules.common.io_guards import extract_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -183,14 +184,9 @@ Plan the response:"""
 
         # Try to extract JSON from response
         raw = str(raw_response).strip()
-        if "{" in raw and "}" in raw:
-            try:
-                candidate = raw[raw.find("{"):raw.rfind("}") + 1]
-                data = json.loads(candidate)
-                if isinstance(data, dict):
-                    return data
-            except Exception as e:
-                logger.debug("Planner JSON parse failed: %s", e)
+        data = extract_json_object(raw)
+        if data and isinstance(data, dict):
+            return data
 
         # Try parsing entire response as JSON
         try:

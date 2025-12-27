@@ -56,7 +56,7 @@ Setup
 pip install -r requirements.txt
 
 Launch
-uvicorn code_server:app --host 0.0.0.0 --port 8000
+uvicorn backend.code_server:app --host 0.0.0.0 --port 8000
 
 Interfaces
 URL	Purpose

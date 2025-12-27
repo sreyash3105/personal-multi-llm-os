@@ -32,6 +32,7 @@ from backend.modules.code.prompts import CHAT_SYSTEM_PROMPT
 from backend.modules.code.pipeline import call_ollama
 from backend.modules.telemetry.history import history_logger
 from backend.modules.common.timeout_policy import run_with_retries
+from backend.modules.common.io_guards import extract_json_object
 from backend.modules.jobs.queue_manager import (
     enqueue_job,
     try_acquire_next_job,
@@ -201,12 +202,9 @@ JSON:
             return call_ollama(judge_prompt, model_name).strip()
 
         raw_response = _run_with_timeout(_call, "chat_judge", model_name)
-        candidate = raw_response
-
-        if "{" in candidate and "}" in candidate:
-            candidate = candidate[candidate.find("{"): candidate.rfind("}") + 1]
-
-        data = json.loads(candidate)
+        data = extract_json_object(raw_response)
+        if data is None or not isinstance(data, dict):
+            raise ValueError("No JSON dict found in judge response")
 
         if data.get("confidence_score") is not None:
             confidence_score = int(data.get("confidence_score"))
@@ -370,10 +368,9 @@ JSON:
                 return call_ollama(planner_prompt, model_name).strip()
 
             planner_raw = _run_with_timeout(_call_planner, "chat_planner", model_name)
-            candidate = planner_raw
-            if "{" in candidate and "}" in candidate:
-                candidate = candidate[candidate.find("{"): candidate.rfind("}") + 1]
-            data = json.loads(candidate)
+            data = extract_json_object(planner_raw)
+            if data is None or not isinstance(data, dict):
+                raise ValueError("No JSON dict found in planner response")
             
             # Extract structured plan data
             plan_title = str(data.get("title") or "Chat Response Plan").strip()

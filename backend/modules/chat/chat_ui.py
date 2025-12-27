@@ -67,7 +67,120 @@ from backend.modules.common.io_guards import (
     sanitize_chat_input,
     clamp_chat_output,
     clamp_tool_output,
+    extract_json_object,
 )
+
+def handle_chat_turn(profile_id: str, chat_id: str, prompt: str, smart: bool = False):
+    """
+    Handle a chat turn for the given profile and chat.
+    This is called from the router when the intent is 'chat'.
+    """
+    profile = _ensure_profile(profile_id)
+    profile_id = profile["id"]
+
+    chat_meta = _ensure_chat(profile_id, chat_id)
+    chat_id = chat_meta["id"]
+
+    raw_prompt = prompt or ""
+    safe_prompt = sanitize_chat_input(raw_prompt)
+
+    # 1) existing ///tool handling
+    tool_response = _maybe_handle_tool_command(
+        prompt_text=safe_prompt,
+        req=ChatRequest(profile_id=profile_id, chat_id=chat_id, prompt=prompt, smart=smart),
+        profile=profile,
+        profile_id=profile_id,
+        chat_meta=chat_meta,
+        chat_id=chat_id,
+    )
+    if tool_response is not None:
+        return tool_response
+
+    # Chat logic
+    messages = get_messages(profile_id, chat_id)
+    context_block = build_profile_context(profile_id, safe_prompt, max_snippets=8)
+
+    base_model_name = _resolve_model(profile, chat_meta)
+    profile_name = profile.get("display_name") or profile_id
+
+    if smart:
+        smart_result = run_chat_smart(
+            profile=profile,
+            profile_id=profile_id,
+            chat_meta=chat_meta,
+            chat_id=chat_id,
+            messages=messages,
+            user_prompt=safe_prompt,
+            context_block=context_block,
+        )
+        answer = smart_result.get("answer") or ""
+        judge_payload = smart_result.get("judge") if isinstance(smart_result.get("judge"), dict) else None
+        model_name_used = smart_result.get("model_used") or base_model_name
+        smart_plan = str(smart_result.get("plan")) if smart_result.get("plan") else None
+        mode_label = "chat_smart"
+    else:
+        convo_lines: List[str] = []
+        for msg in messages:
+            convo_lines.append(_render_message_for_prompt(msg))
+        convo_lines.append("USER: %s" % safe_prompt)
+        convo_block = "\n".join(convo_lines)
+
+        if context_block:
+            context_section = "Profile knowledge (saved notes):\n%s\n\n" % context_block
+        else:
+            context_section = ""
+
+        full_prompt = """
+%s
+
+Current profile: %s
+
+%sConversation so far:
+%s
+
+ASSISTANT:
+""".strip() % (
+            CHAT_SYSTEM_PROMPT,
+            profile_name,
+            context_section,
+            convo_block,
+        )
+
+        model_name_used = base_model_name
+        answer = call_ollama(full_prompt, model_name_used)
+        judge_payload = None
+        smart_plan = None
+        mode_label = "chat"
+
+    answer = clamp_chat_output(answer or "")
+
+    append_message(profile_id, chat_id, "user", safe_prompt)
+    append_message(profile_id, chat_id, "assistant", answer)
+
+    history_logger.log(
+        {
+            "mode": mode_label,
+            "original_prompt": raw_prompt,
+            "normalized_prompt": safe_prompt,
+            "coder_output": None,
+            "reviewer_output": None,
+            "final_output": answer,
+            "escalated": False,
+            "escalation_reason": "",
+            "judge": judge_payload,
+            "chat_profile_id": profile_id,
+            "chat_profile_name": profile.get("display_name"),
+            "chat_id": chat_id,
+            "chat_model_used": model_name_used,
+            "chat_smart_plan": smart_plan,
+            "models": {
+                "chat": model_name_used,
+            },
+        }
+    )
+
+    return {"output": answer, "profile_id": profile_id, "chat_id": chat_id}
+
 
 router = APIRouter()
 
@@ -965,14 +1078,9 @@ If there is clearly nothing useful to save, output:
 
     raw = str(raw).strip()
     # Try to isolate the JSON object if model wrapped it in text
-    candidate = raw
-    if "{" in candidate and "}" in candidate:
-        candidate = candidate[candidate.find("{") : candidate.rfind("}") + 1]
-
-    try:
-        data = json.loads(candidate)
-    except Exception as e:
-        return _fallback(auto_mode="fallback_parse_error", error_text=str(e))
+    data = extract_json_object(raw)
+    if data is None or not isinstance(data, dict):
+        return _fallback(auto_mode="fallback_parse_error", error_text="No JSON dict found")
 
     title = str(data.get("title") or "").strip()
     content = str(data.get("content") or "").strip()

@@ -69,6 +69,28 @@ class ScreenLocator:
             model_name=VISION_MODEL_NAME
         )
 
+        # Phase B: Add confidence validation
+        try:
+            from backend.modules.perception.vision_confidence import validate_vision_result
+            from backend.modules.router.confirmation_router import create_confirmation_request
+
+            vision_result = {"response": vision_response}
+            validated_result = validate_vision_result(vision_result, "location")
+            confidence_meta = validated_result.get("confidence_metadata", {})
+            log.info(f"Screen locator confidence: {confidence_meta.get('confidence_score', 0):.3f} ({confidence_meta.get('confidence_level')})")
+
+            if confidence_meta.get("requires_confirmation", False):
+                # Return confirmation request instead of proceeding
+                message = f"Vision location confidence is {confidence_meta.get('confidence_level')} ({confidence_meta.get('confidence_score', 0):.3f}). Please confirm screen action."
+                return create_confirmation_request(
+                    message=message,
+                    action_data={"type": "screen_locator", "command": command, "profile_id": profile_id},
+                    confidence_metadata=confidence_meta
+                )
+
+        except Exception as e:
+            log.warning(f"Screen locator confidence validation failed: {e}")
+
         # 4. Parse Coordinates
         parsed = self._extract_json(vision_response)
         

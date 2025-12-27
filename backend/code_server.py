@@ -48,10 +48,12 @@ from backend.modules.chat.chat_ui import router as chat_router
 from backend.modules.tools.tools_runtime import execute_tool
 from backend.modules.telemetry.risk import assess_risk
 from backend.modules.security.security_sessions import create_security_session
-from backend.modules.stt.stt_router import router as stt_router 
+from backend.modules.stt.stt_router import router as stt_router
 from backend.modules.router.api_router import router as intent_router
 from backend.modules.automation.router import router as automation_router
 from backend.modules.tts.tts_router import router as tts_router
+from backend.modules.router.confirmation_router import router as confirmation_router
+from backend.modules.router.permission_router import router as permission_router
 
 # =========================
 # FastAPI app
@@ -68,6 +70,8 @@ if security_router:
     app.include_router(security_router)
 app.include_router(intent_router)
 app.include_router(automation_router)
+app.include_router(confirmation_router)
+app.include_router(permission_router)
 
 # =========================
 # API models
@@ -486,11 +490,10 @@ def chat_page():
 def root():
     return chat_page()
 
-# 🟢 NEW: Entry point for launcher.py
+# Entry point for direct execution
 if __name__ == "__main__":
     import uvicorn
-    import os
-    
     print(">>> STARTING BRAIN (API SERVER)...")
     # Bind to 0.0.0.0 so other devices on LAN can access it if needed
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+

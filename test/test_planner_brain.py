@@ -4,7 +4,7 @@ import logging
 
 # Ensure we can import from backend
 from pathlib import Path
-sys.path.append(str(Path(__file__).parent))
+sys.path.append(str(Path(__file__).parent.parent))
 
 # Import the Planner
 from backend.modules.planner.planner import Planner
@@ -13,14 +13,14 @@ from backend.modules.planner.planner import Planner
 logging.basicConfig(level=logging.INFO, format='%(name)s - %(levelname)s - %(message)s')
 
 def test_brain():
-    print("\n🧠 WAKING UP PLANNER BRAIN...\n")
+    print("\n[BRAIN] WAKING UP PLANNER BRAIN...\n")
     
     planner = Planner.shared()
     
     # Test Case 1: Complex Multi-step Instruction
     prompt = "Check if 'notes.txt' exists, and if it does, read it and summarize it."
     
-    print(f"📝 User Prompt: '{prompt}'")
+    print(f"[PROMPT] User Prompt: '{prompt}'")
     print("Thinking...")
     
     try:
@@ -31,22 +31,22 @@ def test_brain():
         )
         
         # Output the result
-        print("\n✨ PLAN GENERATED:")
+        print("\n[PLAN GENERATED]")
         print(json.dumps(plan, indent=2))
         
         # Validation Checks
         if plan.get("intent") == "automation" or plan.get("intent") == "file_op":
-            print("\n✅ Intent Detection: PASS (Correctly identified automation/file op)")
+            print("\n[OK] Intent Detection: PASS (Correctly identified automation/file op)")
         else:
-            print(f"\n⚠️ Intent Detection: WARNING (Got '{plan.get('intent')}', expected automation)")
+            print(f"\n[WARNING] Intent Detection: WARNING (Got '{plan.get('intent')}', expected automation)")
             
         if isinstance(plan.get("risk_hint"), int):
-            print("✅ Risk Scoring: PASS (Valid integer)")
+            print("[OK] Risk Scoring: PASS (Valid integer)")
         else:
-            print("❌ Risk Scoring: FAIL (Not an integer)")
+            print("[FAIL] Risk Scoring: FAIL (Not an integer)")
 
     except Exception as e:
-        print(f"\n❌ PLANNER CRASHED: {e}")
+        print(f"\n[FAIL] PLANNER CRASHED: {e}")
 
 if __name__ == "__main__":
     test_brain()

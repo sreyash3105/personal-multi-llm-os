@@ -170,6 +170,8 @@ def try_acquire_next_job(profile_id: str) -> Optional[Job]:
         return None
 
     with _LOCK:
+        if _SHUTDOWN:
+            return None
         # Constraint 1: Profile Serialism
         active_id = _ACTIVE_BY_PROFILE.get(profile_id)
         if active_id is not None and active_id in _JOBS:
@@ -218,18 +220,19 @@ def mark_job_done(job_id: int, note: Optional[str] = None) -> Optional[Job]:
             logger.warning(f"Attempted to mark unknown job {job_id} as done")
             return None
 
-        # Only release resources if it was actually running
+        # Only release resources if it was actually running and not during shutdown
         if job.state == "running":
-            active_id = _ACTIVE_BY_PROFILE.get(job.profile_id)
-            if active_id == job_id:
-                _ACTIVE_BY_PROFILE.pop(job.profile_id, None)
-            else:
-                logger.warning(f"Job {job_id} marked done but not active for profile {job.profile_id}")
+            if not _SHUTDOWN:
+                active_id = _ACTIVE_BY_PROFILE.get(job.profile_id)
+                if active_id == job_id:
+                    _ACTIVE_BY_PROFILE.pop(job.profile_id, None)
+                else:
+                    logger.warning(f"Job {job_id} marked done but not active for profile {job.profile_id}")
 
-            if job.is_heavy:
-                if _ACTIVE_HEAVY_COUNT <= 0:
-                    logger.error(f"Heavy count underflow when marking job {job_id} done")
-                _ACTIVE_HEAVY_COUNT = max(0, _ACTIVE_HEAVY_COUNT - 1)
+                if job.is_heavy:
+                    if _ACTIVE_HEAVY_COUNT <= 0:
+                        logger.error(f"Heavy count underflow when marking job {job_id} done")
+                    _ACTIVE_HEAVY_COUNT = max(0, _ACTIVE_HEAVY_COUNT - 1)
 
         job.state = "done"
         job.finished_ts = time.time()
@@ -252,16 +255,17 @@ def mark_job_failed(job_id: int, error: str) -> Optional[Job]:
             return None
 
         if job.state == "running":
-            active_id = _ACTIVE_BY_PROFILE.get(job.profile_id)
-            if active_id == job_id:
-                _ACTIVE_BY_PROFILE.pop(job.profile_id, None)
-            else:
-                logger.warning(f"Job {job_id} marked failed but not active for profile {job.profile_id}")
+            if not _SHUTDOWN:
+                active_id = _ACTIVE_BY_PROFILE.get(job.profile_id)
+                if active_id == job_id:
+                    _ACTIVE_BY_PROFILE.pop(job.profile_id, None)
+                else:
+                    logger.warning(f"Job {job_id} marked failed but not active for profile {job.profile_id}")
 
-            if job.is_heavy:
-                if _ACTIVE_HEAVY_COUNT <= 0:
-                    logger.error(f"Heavy count underflow when marking job {job_id} failed")
-                _ACTIVE_HEAVY_COUNT = max(0, _ACTIVE_HEAVY_COUNT - 1)
+                if job.is_heavy:
+                    if _ACTIVE_HEAVY_COUNT <= 0:
+                        logger.error(f"Heavy count underflow when marking job {job_id} failed")
+                    _ACTIVE_HEAVY_COUNT = max(0, _ACTIVE_HEAVY_COUNT - 1)
 
         job.state = "failed"
         job.error = error
@@ -273,24 +277,34 @@ def mark_job_failed(job_id: int, error: str) -> Optional[Job]:
 
 def cancel_job(job_id: int, note: Optional[str] = None) -> Optional[Job]:
     """
-    Cancel a queued job. If running, use force_cancel (not impl here).
+    Cancel a queued job. If running, mark as cancelled and release resources.
+    Note: The actual thread/worker is not forcibly killed (Python limitation).
     """
+    global _ACTIVE_HEAVY_COUNT
     with _LOCK:
         job = _JOBS.get(job_id)
         if not job:
             return None
 
-        # If it's already running, we can't just "cancel" it without killing the thread
-        # (which Python makes hard). For now, we only allow cancelling queued jobs.
-        if job.state != "queued":
-            return job
+        if job.state == "queued":
+            # Remove from queue
+            q = _PROFILE_QUEUES.get(job.profile_id)
+            if q is not None:
+                try:
+                    q.remove(job_id)
+                except ValueError:
+                    pass
+        elif job.state == "running":
+            # Release resources for running job
+            active_id = _ACTIVE_BY_PROFILE.get(job.profile_id)
+            if active_id == job_id:
+                _ACTIVE_BY_PROFILE.pop(job.profile_id, None)
 
-        q = _PROFILE_QUEUES.get(job.profile_id)
-        if q is not None:
-            try:
-                q.remove(job_id)
-            except ValueError:
-                pass
+            if job.is_heavy:
+                _ACTIVE_HEAVY_COUNT = max(0, _ACTIVE_HEAVY_COUNT - 1)
+        else:
+            # Already completed
+            return job
 
         job.state = "cancelled"
         job.finished_ts = time.time()
@@ -331,11 +345,14 @@ def cleanup_stale_jobs(max_age_seconds: int = 3600) -> int:
 
         # Remove them
         for job_id in to_remove:
-            _JOBS.pop(job_id, None)
-            cleaned_count += 1
+            job = _JOBS.pop(job_id, None)
+            if job:
+                cleaned_count += 1
+                # Log individual job cleanup
+                logger.debug(f"Cleaned up stale job {job_id} (state: {job.state}, age: {time.time() - (job.finished_ts or 0):.1f}s)")
 
     if cleaned_count > 0:
-        logger.info(f"Cleaned up {cleaned_count} stale jobs")
+        logger.info(f"Cleaned up {cleaned_count} stale jobs older than {max_age_seconds}s")
 
     return cleaned_count
 
@@ -430,5 +447,41 @@ def shutdown_queue_manager() -> None:
     logger.info(f"Queue manager shutdown complete. Failed {len(failed_jobs)} running jobs.")
 
 
-# Register shutdown handler
+# =========================
+# Automated Cleanup
+# =========================
+
+_cleanup_thread: Optional[threading.Thread] = None
+_cleanup_stop_event = threading.Event()
+
+def _cleanup_worker():
+    """Background worker to periodically clean up stale jobs."""
+    while not _cleanup_stop_event.is_set():
+        try:
+            cleaned = cleanup_stale_jobs(max_age_seconds=3600)  # 1 hour
+            if cleaned > 0:
+                logger.info(f"Automated cleanup removed {cleaned} stale jobs")
+        except Exception as e:
+            logger.error(f"Automated cleanup failed: {e}")
+        _cleanup_stop_event.wait(60)  # Clean every minute for better maintenance
+
+def start_cleanup_worker():
+    """Start the background cleanup worker."""
+    global _cleanup_thread
+    if _cleanup_thread is None or not _cleanup_thread.is_alive():
+        _cleanup_stop_event.clear()
+        _cleanup_thread = threading.Thread(target=_cleanup_worker, daemon=True)
+        _cleanup_thread.start()
+
+def stop_cleanup_worker():
+    """Stop the background cleanup worker."""
+    _cleanup_stop_event.set()
+    if _cleanup_thread and _cleanup_thread.is_alive():
+        _cleanup_thread.join(timeout=5.0)
+
+# Start cleanup on import
+start_cleanup_worker()
+
+# Register handlers
+atexit.register(stop_cleanup_worker)
 atexit.register(shutdown_queue_manager)

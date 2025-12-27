@@ -141,11 +141,12 @@ def run_vision(
         start_wait = time.time()
         max_wait = 300.0  # 5 minutes timeout
         while time.time() - start_wait < max_wait:
+            acquired = try_acquire_next_job(job_profile)
+            if acquired and acquired.id == job.id:
+                break
             snapshot = get_job(job.id)
             if snapshot is None or snapshot.state in ("failed", "cancelled"):
                 return "Vision job cancelled or failed in queue."
-            if snapshot.state == "running":
-                break
             time.sleep(0.1)
         else:
             # Timeout reached
@@ -170,6 +171,25 @@ def run_vision(
                     mode=mode or "auto",
                 )
             result = _run_with_timeout(_call, effective_model)
+
+            # Phase B: Add confidence validation
+            try:
+                from backend.modules.perception.vision_confidence import validate_vision_result
+                vision_result = {"response": result, "mode": mode}
+                validated_result = validate_vision_result(vision_result, mode)
+                confidence_meta = validated_result.get("confidence_metadata", {})
+                # Log confidence for observability
+                if history_logger:
+                    history_logger.log({
+                        "mode": "vision_confidence",
+                        "confidence_score": confidence_meta.get("confidence_score"),
+                        "confidence_level": confidence_meta.get("confidence_level"),
+                        "requires_confirmation": confidence_meta.get("requires_confirmation"),
+                    })
+            except Exception as e:
+                # Use print since logger not available
+                print(f"[VISION] Confidence validation failed: {e}")
+
             final_text = _clamp_output_text(result)
         except Exception as e:
             status = "error"

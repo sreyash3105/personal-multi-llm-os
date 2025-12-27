@@ -50,6 +50,11 @@ try:
 except Exception:
     def assess_risk(*args, **kwargs): return {"risk_level": 1.0, "reason": "Risk module missing"}
 
+try:
+    from backend.modules.common.io_guards import extract_json_object
+except Exception:
+    extract_json_object = None
+
 logger = logging.getLogger(__name__)
 
 # --- Planner Prompt ---
@@ -77,18 +82,13 @@ DEFAULT_PLANNER_MODEL = "llama3.1:8b"
 
 
 def _parse_json_from_text(raw: str) -> Dict[str, Any]:
-    if not raw:
+    if not raw or not extract_json_object:
         return {}
-    txt = str(raw).strip()
-    if "{" in txt and "}" in txt:
-        try:
-            candidate = txt[txt.find("{") : txt.rfind("}") + 1]
-            data = json.loads(candidate)
-            if isinstance(data, dict):
-                return data
-            return {"steps": data} if isinstance(data, list) else {}
-        except Exception:
-            pass
+    data = extract_json_object(raw)
+    if isinstance(data, dict):
+        return data
+    elif isinstance(data, list):
+        return {"steps": data}
     return {}
 
 

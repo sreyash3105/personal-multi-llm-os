@@ -194,10 +194,7 @@ def create_security_session(
     if not profile_id or not scope:
         raise ValueError("profile_id and scope must be non-empty strings.")
 
-    if ttl_seconds <= 0:
-        ttl_seconds = 1
-    if max_uses <= 0:
-        max_uses = 1
+    auth_level_required = auth_level  # For compatibility
 
     now = _now()
     expires_at = now + timedelta(seconds=int(ttl_seconds))
@@ -290,6 +287,7 @@ def consume_security_session_if_allowed(
     profile_id: str,
     scope: str,
     required_level: int,
+    auth_level_required: Optional[int] = None,  # For compatibility
 ) -> Optional[Dict[str, Any]]:
     """
     Attempt to consume a security session for the given profile/scope.

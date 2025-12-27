@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 # Ensure backend can be imported
-sys.path.append(str(Path(__file__).parent))
+sys.path.append(str(Path(__file__).parent.parent))
 
 from backend.modules.vision.screen_locator import screen_locator
 from backend.core.config import VISION_MODEL_NAME
@@ -14,14 +14,14 @@ from backend.core.config import VISION_MODEL_NAME
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 def test_eyes():
-    print(f"\n👁️  WAKING UP VISION SYSTEM (Model: {VISION_MODEL_NAME})...\n")
+    print(f"\n[VISION]  WAKING UP VISION SYSTEM (Model: {VISION_MODEL_NAME})...\n")
     
     # 1. Define a target that is definitely on your screen
     # "Taskbar" or "Start button" are good defaults for Windows
     target = "Start button" 
     command = f"Find the {target} and give me coordinates to click it."
 
-    print(f"📸  Capturing Screen...")
+    print(f"[CAPTURE]  Capturing Screen...")
     print(f"📝  Prompt: '{command}'")
     print("⏳  Analyzing (this involves sending a screenshot to LLaVA, may take 5-10s)...")
 
@@ -33,7 +33,7 @@ def test_eyes():
 
         # Check results
         if not result.get("ok"):
-            print(f"\n❌ Vision Failed: {result.get('error')}")
+            print(f"\n[FAIL] Vision Failed: {result.get('error')}")
             if "raw_vision" in result:
                 print(f"   Raw Model Output: {result['raw_vision'][:200]}...")
             return
@@ -41,7 +41,7 @@ def test_eyes():
         coords = result.get("coordinates")
         conf = result.get("confidence")
         
-        print(f"\n✅ Vision Successful ({duration:.2f}s)")
+        print(f"\n[OK] Vision Successful ({duration:.2f}s)")
         print(f"   Target: {target}")
         print(f"   Coordinates Found: {coords}")
         print(f"   Confidence: {conf}")
@@ -52,7 +52,7 @@ def test_eyes():
             print(f"    (It should be near the bottom-left/center for the Start button)")
 
     except Exception as e:
-        print(f"\n❌ Vision Crashed: {e}")
+        print(f"\n[FAIL] Vision Crashed: {e}")
         print("   (Check if Ollama is running and 'llava-phi3' is pulled)")
 
 if __name__ == "__main__":

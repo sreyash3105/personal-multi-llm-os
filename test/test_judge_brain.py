@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 # Ensure backend can be imported
-sys.path.append(str(Path(__file__).parent))
+sys.path.append(str(Path(__file__).parent.parent))
 
 from backend.modules.code.pipeline import run_judge
 from backend.core.config import JUDGE_MODEL_NAME
@@ -13,7 +13,7 @@ from backend.core.config import JUDGE_MODEL_NAME
 logging.basicConfig(level=logging.INFO, format='%(name)s - %(levelname)s - %(message)s')
 
 def test_judge():
-    print(f"\n⚖️  WAKING UP JUDGE BRAIN (Model: {JUDGE_MODEL_NAME})...\n")
+    print(f"\n[JUDGE] WAKING UP JUDGE BRAIN (Model: {JUDGE_MODEL_NAME})...\n")
 
     # Mock Inputs: A common coding scenario
     user_prompt = "Write a Python function to calculate the factorial of a number."
@@ -36,7 +36,7 @@ def factorial(n: int) -> int:
     return n * factorial(n - 1)
 """
 
-    print(f"📝 User Prompt: '{user_prompt}'")
+    print(f"[PROMPT] User Prompt: '{user_prompt}'")
     print("Thinking (comparing Draft vs Final)...")
 
     try:
@@ -48,7 +48,7 @@ def factorial(n: int) -> int:
         )
 
         # Output the raw JSON result
-        print("\n✨ JUDGE VERDICT:")
+        print("\n[JUDGE VERDICT]")
         print(json.dumps(result, indent=2))
 
         # Verification Logic
@@ -56,14 +56,14 @@ def factorial(n: int) -> int:
         conflict = result.get("conflict_score")
 
         if conf is not None and conflict is not None:
-            print(f"\n✅ Judge is active! (Confidence: {conf}/10, Conflict: {conflict}/10)")
+            print(f"\n[OK] Judge is active! (Confidence: {conf}/10, Conflict: {conflict}/10)")
             if conf > 8.0:
                 print("   -> High confidence detected (Expected behavior for good code).")
         else:
-            print("\n⚠️ Judge returned None scores. The model might not be following JSON format.")
+            print("\n[WARNING] Judge returned None scores. The model might not be following JSON format.")
 
     except Exception as e:
-        print(f"\n❌ JUDGE FAILED: {e}")
+        print(f"\n[FAIL] JUDGE FAILED: {e}")
 
 if __name__ == "__main__":
     test_judge()

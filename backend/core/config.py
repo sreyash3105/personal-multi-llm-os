@@ -98,6 +98,19 @@ SECURITY_RISK_THRESHOLDS = {}
 SECURITY_TOOL_OVERRIDES = {}
 SECURITY_OPERATION_OVERRIDES = {}
 
+# ---- Phase B: Perception confidence thresholds ----
+PERCEPTION_CONFIDENCE_LOW_THRESHOLD = 0.3
+PERCEPTION_CONFIDENCE_MEDIUM_THRESHOLD = 0.6
+PERCEPTION_CONFIDENCE_HIGH_THRESHOLD = 0.8
+PERCEPTION_CONFIRM_REQUIRED = True
+
+# ---- Phase B: Confirmation lifecycle ----
+CONFIRMATION_TTL_SECONDS = 300  # 5 minutes default
+CONFIRMATION_CLEANUP_INTERVAL_SECONDS = 30  # Cleanup every 30 seconds for better responsiveness
+
+# ---- Phase C: Permission system ----
+PERMISSION_SYSTEM_ENABLED = True  # Dry-run mode: logs permission decisions but does not enforce
+
 # ---- HARDNING BASE · Phase 2 — Concurrency & timeouts ----
 # Maximum number of heavy operations (LLM, Vision, STT) that can run at the same time.
 MAX_CONCURRENT_HEAVY_REQUESTS = 2

@@ -15,6 +15,7 @@ No existing code is modified yet; this is a library module only.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -75,3 +76,32 @@ def clamp_tool_output(text: Any) -> str:
     This is mainly useful when tools return large JSON structures or logs.
     """
     return clamp_text(text, MAX_TOOL_OUTPUT_CHARS, "Tool output")
+
+
+def extract_json_object(text: str) -> dict | list | None:
+    """
+    Extract a JSON object (dict or list) from text that may contain surrounding content.
+
+    Looks for the outermost {} or [] and attempts to parse it as JSON.
+
+    Returns the parsed object if successful and it's a dict or list, None otherwise.
+    """
+    txt = str(text).strip()
+    if ("{" not in txt or "}" not in txt) and ("[" not in txt or "]" not in txt):
+        return None
+    try:
+        # Try dict first
+        if "{" in txt and "}" in txt:
+            candidate = txt[txt.find("{"): txt.rfind("}") + 1]
+            data = json.loads(candidate)
+            if isinstance(data, (dict, list)):
+                return data
+        # Try list
+        if "[" in txt and "]" in txt:
+            candidate = txt[txt.find("["): txt.rfind("]") + 1]
+            data = json.loads(candidate)
+            if isinstance(data, (dict, list)):
+                return data
+    except Exception:
+        pass
+    return None

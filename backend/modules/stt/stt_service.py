@@ -257,9 +257,9 @@ class STTService:
                 if time.time() - wait_start > 5.0:
                     mark_job_failed(job.id, "STT Timeout (VRAM busy)")
                     return {"text": "", "error": "System busy (Thinking/Seeing), ignored voice."}
-                
-                snapshot = get_job(job.id)
-                if snapshot and snapshot.state == "running":
+
+                acquired = try_acquire_next_job(profile_id)
+                if acquired and acquired.id == job.id:
                     break
                 time.sleep(0.05)
 
@@ -268,6 +268,28 @@ class STTService:
             start_ts = time.monotonic()
             out = self._transcribe_with_array(pcm, sr, language, prompt)
             duration = time.monotonic() - start_ts
+
+            # Phase B: Add confidence validation
+            try:
+                from backend.modules.perception.stt_confidence import validate_stt_result
+                from backend.modules.router.confirmation_router import create_confirmation_request
+
+                out = validate_stt_result(out)
+                confidence_meta = out.get("confidence_metadata", {})
+
+                if confidence_meta.get("requires_confirmation", False):
+                    # Create confirmation request instead of returning result
+                    message = f"STT confidence is {confidence_meta.get('confidence_level')} ({confidence_meta.get('confidence_score', 0):.3f}). Please confirm transcription."
+                    confirmation = create_confirmation_request(
+                        message=message,
+                        action_data={"type": "stt_result", "result": out},
+                        confidence_metadata=confidence_meta
+                    )
+                    mark_job_done(job.id)
+                    return confirmation
+
+            except Exception as e:
+                log.warning(f"STT confidence validation failed: {e}")
 
             mark_job_done(job.id)
 

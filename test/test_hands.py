@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 # Ensure backend can be imported
-sys.path.append(str(Path(__file__).parent))
+sys.path.append(str(Path(__file__).parent.parent))
 
 # Import the tools
 from backend.modules.tools.pc_control_tools import (
@@ -27,17 +27,17 @@ def test_hands():
         set_real_mode(True)
         # Set bounds (standard 1080p, safe default)
         set_screen_bounds(1920, 1080)
-        print("✅ Drivers Loaded (Real Mode: ON)")
+        print("[OK] Drivers Loaded (Real Mode: ON)")
     except Exception as e:
-        print(f"❌ Failed to load drivers: {e}")
+        print(f"[FAIL] Failed to load drivers: {e}")
         print("   Did you run: pip install pyautogui pynput")
         return
 
-    print("\n⚠️  WARNING: MOUSE WILL MOVE IN 3 SECONDS. LET GO OF YOUR MOUSE.")
+    print("\n[WARNING]  WARNING: MOUSE WILL MOVE IN 3 SECONDS. LET GO OF YOUR MOUSE.")
     time.sleep(3)
 
     # 2. Test Mouse Movement (BCMM Physics)
-    print("\n🖱️  Testing Mouse (S-Curve Physics)...")
+    print("\n[MOUSE]  Testing Mouse (S-Curve Physics)...")
     
     # Square movement pattern
     start_x, start_y = 500, 500
@@ -64,16 +64,16 @@ def test_hands():
         })
         
         if not result.get("ok"):
-            print(f"❌ Move failed: {result}")
+            print(f"[FAIL] Move failed: {result}")
             break
             
         start_x, start_y = tx, ty
         time.sleep(0.2)
 
-    print("✅ Mouse Test Complete.")
+    print("[OK] Mouse Test Complete.")
 
     # 3. Test Keyboard
-    print("\n⌨️  Testing Keyboard...")
+    print("\n[KEYBOARD]  Testing Keyboard...")
     print("   (Will type 'hello' into active window - DON'T CHANGE FOCUS)")
     time.sleep(1)
     
@@ -84,9 +84,9 @@ def test_hands():
             print(f"   Typed: '{char}'")
             time.sleep(0.1)
         else:
-            print(f"❌ Failed to type '{char}'")
+            print(f"[FAIL] Failed to type '{char}'")
 
-    print("\n✅ Keyboard Test Complete.")
+    print("\n[OK] Keyboard Test Complete.")
 
 if __name__ == "__main__":
     test_hands()
